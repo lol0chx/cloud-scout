@@ -1,0 +1,34 @@
+CloudScout — Available Commands
+================================
+
+TEAM STATS (recent form, averages, rolling performance):
+  python main.py --team "LA Lakers" --last 5
+  python main.py --team "Boston Celtics" --last 10
+  python main.py --team "Warriors" --last 3
+
+PLAYER STATS (average stats over last N games):
+  python main.py --player "LeBron James" --last 10
+  python main.py --player "Luka" --last 5
+
+HEAD-TO-HEAD (last N meetings between two teams):
+  python main.py --h2h "LA Lakers" "Boston Celtics" --last 5
+  python main.py --h2h "Warriors" "Nuggets" --last 10
+
+TOP PERFORMERS (rank players on a team by avg points):
+  python main.py --top "LA Lakers" --last 5
+  python main.py --top "Boston Celtics" --last 10
+
+SCRAPE FRESH DATA (fetch new games from NBA.com before analysis):
+  python main.py --team "LA Lakers" --last 5 --scrape
+  python main.py --h2h "LA Lakers" "Boston Celtics" --last 5 --scrape
+  python main.py --top "LA Lakers" --last 5 --scrape
+
+RUN NIGHTLY SCHEDULER (auto-scrapes watchlist teams at midnight):
+  python scheduler.py
+
+Notes:
+  - --last defaults to 5 if not specified
+  - Team names accept full names, nicknames, or abbreviations
+    (e.g., "Los Angeles Lakers", "LA Lakers", "Lakers", "LAL")
+  - Player names support partial matching (e.g., "LeBron" finds "LeBron James")
+  - Use --scrape on the first run to populate the database
