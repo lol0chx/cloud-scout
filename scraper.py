@@ -8,6 +8,7 @@ as pandas DataFrames.
 """
 
 import time
+from datetime import datetime
 
 import pandas as pd
 from nba_api.stats.static import teams as nba_teams
@@ -133,10 +134,17 @@ def fetch_games(team, season=DEFAULT_SEASON, last=15):
         matchup = row["MATCHUP"]
         is_home = "vs." in matchup
 
+        # Convert "MAR 14, 2026" to "2026-03-14" for consistent storage
+        raw_date = str(row["GAME_DATE"]).strip()
+        try:
+            parsed_date = datetime.strptime(raw_date, "%b %d, %Y").strftime("%Y-%m-%d")
+        except ValueError:
+            parsed_date = raw_date[:10]
+
         pending_games.append({
             "game_id": game_id,
             "game_id_int": game_id_int,
-            "date": str(row["GAME_DATE"])[:10],
+            "date": parsed_date,
             "is_home": is_home,
             "team_name": team_info["full_name"],
             "season": season,
