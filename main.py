@@ -18,6 +18,7 @@ import io
 
 from database import init_db, load_games, load_players
 from scraper import scrape_team, _resolve_team
+from nba_api.stats.static import teams as nba_teams
 import pandas as pd
 from analytics import (
     last_n_avg,
@@ -70,6 +71,11 @@ def build_parser():
         "--games", type=str, help="Show raw game results for a team"
     )
 
+    parser.add_argument(
+        "--scrape-all", action="store_true",
+        help="Scrape last N games for all 30 NBA teams"
+    )
+
     # Options
     parser.add_argument(
         "--last", type=int, default=5,
@@ -100,7 +106,7 @@ def main():
     args = parser.parse_args()
 
     # Show help if no action is specified
-    if not any([args.team, args.player, args.h2h, args.top, args.pvt, args.games]):
+    if not any([args.team, args.player, args.h2h, args.top, args.pvt, args.games, args.scrape_all]):
         parser.print_help()
         sys.exit(0)
 
@@ -139,6 +145,21 @@ def main():
 
             for team in teams_to_scrape:
                 scrape_team(team, last=args.last)
+
+        # If --scrape-all is set, scrape every NBA team
+        if args.scrape_all:
+            all_teams = nba_teams.get_teams()
+            total = len(all_teams)
+            print(f"\nScraping last {args.last} games for all {total} NBA teams...\n")
+            for i, t in enumerate(sorted(all_teams, key=lambda x: x["full_name"]), 1):
+                print(f"[{i}/{total}] {t['full_name']}")
+                try:
+                    scrape_team(t["full_name"], last=args.last)
+                except Exception as e:
+                    print(f"  Error: {e}")
+            print(f"\nDone! All {total} teams scraped.")
+            conn.close()
+            sys.exit(0)
 
         # Load data from the database for analysis
         games_df = load_games(conn, league=args.league)
