@@ -9,7 +9,18 @@ All functions accept a league parameter (default "NBA") to support
 future multi-sport expansion.
 """
 
+import unicodedata
+
 import pandas as pd
+
+
+def _normalize(name):
+    """
+    Strip accents and diacritics from a string so that e.g.
+    "Dončić" matches "Doncic". Converts to lowercase for comparison.
+    """
+    nfkd = unicodedata.normalize("NFKD", name)
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
 
 
 def last_n_avg(team, n, df):
@@ -182,15 +193,15 @@ def player_avg(player_name, n, df):
     if n < 1:
         raise ValueError("n must be at least 1.")
 
-    # Case-insensitive partial match so users don't need exact spelling
-    player_games = df[df["name"].str.contains(player_name, case=False, na=False)].copy()
+    # Match player name, ignoring accents and case
+    # (e.g., "Luka Doncic" matches "Luka Dončić")
+    normalized_input = _normalize(player_name)
+    player_games = df[df["name"].apply(_normalize) == normalized_input].copy()
 
     if player_games.empty:
         raise ValueError(f"No data found for player '{player_name}'.")
 
-    # Get the matched player's full name from the first result
     matched_name = player_games.iloc[0]["name"]
-    player_games = player_games[player_games["name"] == matched_name]
 
     # Sort by date descending and take the last N games
     player_games = player_games.sort_values("date", ascending=False).head(n)
@@ -228,15 +239,15 @@ def player_vs_team(player_name, opponent, n, df, games_df=None):
         print("Games data required for player-vs-team analysis.")
         return pd.DataFrame()
 
-    # Find the player's records
-    player_games = df[df["name"].str.contains(player_name, case=False, na=False)].copy()
+    # Match player name, ignoring accents and case
+    normalized_input = _normalize(player_name)
+    player_games = df[df["name"].apply(_normalize) == normalized_input].copy()
 
     if player_games.empty:
         print(f"No data found for player '{player_name}'.")
         return pd.DataFrame()
 
     matched_name = player_games.iloc[0]["name"]
-    player_games = player_games[player_games["name"] == matched_name]
 
     # Join with games data to get opponent info for each game
     merged = player_games.merge(

@@ -12,12 +12,12 @@ GAME RESULTS (raw W/L results with scores and location):
 
 PLAYER STATS (average stats over last N games):
   python main.py --player "LeBron James" --last 10
-  python main.py --player "Luka" --last 5
+  python main.py --player "Luka Doncic" --last 5
   python main.py --player "Jayson Tatum" --last 15
 
 PLAYER VS TEAM (player's averages against a specific opponent):
   python main.py --pvt "LeBron James" "Chicago Bulls" --last 5
-  python main.py --pvt "Luka" "Celtics" --last 10
+  python main.py --pvt "Luka Doncic" "Celtics" --last 10
 
 HEAD-TO-HEAD (last N meetings between two teams):
   python main.py --h2h "LA Lakers" "Boston Celtics" --last 5
@@ -37,6 +37,9 @@ SCRAPE ALL TEAMS (fetch last N games for all 30 NBA teams):
   python main.py --scrape-all --last 15
   python main.py --scrape-all --last 10
 
+WEB DASHBOARD (interactive Streamlit UI):
+  streamlit run app.py
+
 RUN NIGHTLY SCHEDULER (auto-scrapes watchlist teams at midnight):
   python scheduler.py
 
@@ -47,7 +50,7 @@ Notes:
   - --last defaults to 5 if not specified
   - Team names accept full names, nicknames, or abbreviations
     (e.g., "Los Angeles Lakers", "LA Lakers", "Lakers", "LAL")
-  - Player names support partial matching (e.g., "LeBron" finds "LeBron James")
+  - Player names require full name (e.g., "LeBron James", "Luka Doncic")
   - Use --scrape on the first run to populate the database
   - Data is saved locally in cloudscout.db so you only need to scrape once
   - Add --scrape to any command to fetch fresh data before analysis
