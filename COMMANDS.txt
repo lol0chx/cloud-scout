@@ -33,6 +33,10 @@ SCRAPE FRESH DATA (fetch new games from NBA.com before analysis):
   python main.py --h2h "LA Lakers" "Boston Celtics" --last 5 --scrape
   python main.py --top "LA Lakers" --last 5 --scrape
 
+SCRAPE ALL TEAMS (fetch last N games for all 30 NBA teams):
+  python main.py --scrape-all --last 15
+  python main.py --scrape-all --last 10
+
 RUN NIGHTLY SCHEDULER (auto-scrapes watchlist teams at midnight):
   python scheduler.py
 
