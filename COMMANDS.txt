@@ -6,9 +6,18 @@ TEAM STATS (recent form, averages, rolling performance):
   python main.py --team "Boston Celtics" --last 10
   python main.py --team "Warriors" --last 3
 
+GAME RESULTS (raw W/L results with scores and location):
+  python main.py --games "LA Lakers" --last 5
+  python main.py --games "Nuggets" --last 10
+
 PLAYER STATS (average stats over last N games):
   python main.py --player "LeBron James" --last 10
   python main.py --player "Luka" --last 5
+  python main.py --player "Jayson Tatum" --last 15
+
+PLAYER VS TEAM (player's averages against a specific opponent):
+  python main.py --pvt "LeBron James" "Chicago Bulls" --last 5
+  python main.py --pvt "Luka" "Celtics" --last 10
 
 HEAD-TO-HEAD (last N meetings between two teams):
   python main.py --h2h "LA Lakers" "Boston Celtics" --last 5
@@ -20,11 +29,15 @@ TOP PERFORMERS (rank players on a team by avg points, assists, rebounds, steals)
 
 SCRAPE FRESH DATA (fetch new games from NBA.com before analysis):
   python main.py --team "LA Lakers" --last 5 --scrape
+  python main.py --games "LA Lakers" --last 10 --scrape
   python main.py --h2h "LA Lakers" "Boston Celtics" --last 5 --scrape
   python main.py --top "LA Lakers" --last 5 --scrape
 
 RUN NIGHTLY SCHEDULER (auto-scrapes watchlist teams at midnight):
   python scheduler.py
+
+HELP:
+  python main.py --help
 
 Notes:
   - --last defaults to 5 if not specified
@@ -32,3 +45,5 @@ Notes:
     (e.g., "Los Angeles Lakers", "LA Lakers", "Lakers", "LAL")
   - Player names support partial matching (e.g., "LeBron" finds "LeBron James")
   - Use --scrape on the first run to populate the database
+  - Data is saved locally in cloudscout.db so you only need to scrape once
+  - Add --scrape to any command to fetch fresh data before analysis

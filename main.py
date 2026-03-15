@@ -18,6 +18,7 @@ import io
 
 from database import init_db, load_games, load_players
 from scraper import scrape_team, _resolve_team
+import pandas as pd
 from analytics import (
     last_n_avg,
     head_to_head,
@@ -61,6 +62,13 @@ def build_parser():
     parser.add_argument(
         "--top", type=str, help="Show top performers on a team"
     )
+    parser.add_argument(
+        "--pvt", nargs=2, metavar=("PLAYER", "TEAM"),
+        help="Player's average stats against a specific team"
+    )
+    parser.add_argument(
+        "--games", type=str, help="Show raw game results for a team"
+    )
 
     # Options
     parser.add_argument(
@@ -92,7 +100,7 @@ def main():
     args = parser.parse_args()
 
     # Show help if no action is specified
-    if not any([args.team, args.player, args.h2h, args.top]):
+    if not any([args.team, args.player, args.h2h, args.top, args.pvt, args.games]):
         parser.print_help()
         sys.exit(0)
 
@@ -105,6 +113,10 @@ def main():
         args.h2h = [_resolve_team(t)["full_name"] for t in args.h2h]
     if args.top:
         args.top = _resolve_team(args.top)["full_name"]
+    if args.pvt:
+        args.pvt[1] = _resolve_team(args.pvt[1])["full_name"]
+    if args.games:
+        args.games = _resolve_team(args.games)["full_name"]
 
     # Initialize the database (creates tables if needed)
     conn = init_db()
@@ -120,6 +132,10 @@ def main():
                 teams_to_scrape.extend(args.h2h)
             elif args.top:
                 teams_to_scrape.append(args.top)
+            elif args.pvt:
+                teams_to_scrape.append(args.pvt[1])
+            elif args.games:
+                teams_to_scrape.append(args.games)
 
             for team in teams_to_scrape:
                 scrape_team(team, last=args.last)
@@ -145,6 +161,12 @@ def main():
 
         elif args.top:
             _handle_top(args.top, args.last, players_df, games_df)
+
+        elif args.pvt:
+            _handle_pvt(args.pvt[0], args.pvt[1], args.last, players_df, games_df)
+
+        elif args.games:
+            _handle_games(args.games, args.last, games_df)
 
     except ValueError as e:
         print(f"\nError: {e}")
@@ -225,6 +247,63 @@ def _handle_top(team, n, players_df, games_df):
     top_df = top_performers(team, n, players_df, games_df)
     if not top_df.empty:
         print("\n" + top_df.to_string(index=False))
+
+
+def _handle_pvt(player, opponent, n, players_df, games_df):
+    """
+    Handle the --pvt action: show a player's average stats
+    against a specific team over their last N matchups.
+    """
+    if players_df.empty:
+        print("\nNo player data found in the database.")
+        print("Try running with --scrape and --team to fetch player data first.")
+        return
+
+    print(f"\n{'='*50}")
+    print(f"  {player} vs {opponent} — Last {n} Games")
+    print(f"{'='*50}")
+
+    pvt_df = player_vs_team(player, opponent, n, players_df, games_df)
+    if not pvt_df.empty:
+        print("\n" + pvt_df.to_string(index=False))
+
+
+def _handle_games(team, n, games_df):
+    """
+    Handle the --games action: show the raw game results
+    for a team's last N games.
+    """
+    team_games = games_df[
+        (games_df["home_team"] == team) | (games_df["away_team"] == team)
+    ].sort_values("date", ascending=False).head(n)
+
+    if team_games.empty:
+        print(f"\nNo game data found for {team}.")
+        return
+
+    print(f"\n{'='*50}")
+    print(f"  {team} — Last {n} Game Results")
+    print(f"{'='*50}")
+
+    # Build a clean results table
+    results = []
+    for _, row in team_games.iterrows():
+        is_home = row["home_team"] == team
+        opponent = row["away_team"] if is_home else row["home_team"]
+        team_score = row["home_score"] if is_home else row["away_score"]
+        opp_score = row["away_score"] if is_home else row["home_score"]
+        location = "Home" if is_home else "Away"
+        result = "W" if team_score > opp_score else "L"
+        results.append({
+            "date": row["date"],
+            "opponent": opponent,
+            "result": result,
+            "score": f"{team_score}-{opp_score}",
+            "location": location,
+        })
+
+    results_df = pd.DataFrame(results)
+    print("\n" + results_df.to_string(index=False))
 
 
 if __name__ == "__main__":
