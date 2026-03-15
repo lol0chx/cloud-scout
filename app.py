@@ -204,6 +204,26 @@ with tab_h2h:
         else:
             st.dataframe(h2h_df, use_container_width=True, hide_index=True)
 
+            # Summary stats below the table
+            a_col = f"{h2h_team_a}_score"
+            b_col = f"{h2h_team_b}_score"
+            a_wins = (h2h_df["winner"] == h2h_team_a).sum()
+            b_wins = (h2h_df["winner"] == h2h_team_b).sum()
+
+            st.metric("Total Games", len(h2h_df))
+
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric(f"{h2h_team_a} Wins", int(a_wins))
+            col2.metric(f"{h2h_team_a} Avg Points", round(h2h_df[a_col].mean(), 1))
+            col3.metric(f"{h2h_team_b} Wins", int(b_wins))
+            col4.metric(f"{h2h_team_b} Avg Points", round(h2h_df[b_col].mean(), 1))
+
+            # Average combined game total — centered
+            avg_total = round((h2h_df[a_col] + h2h_df[b_col]).mean(), 1)
+            st.markdown("---")
+            _, center, _ = st.columns([1, 1, 1])
+            center.metric("Avg Game Total Points", avg_total)
+
 # --- Tab 5: Top Performers ---
 with tab_top:
     st.subheader("Top Performers")
