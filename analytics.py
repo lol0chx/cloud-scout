@@ -309,7 +309,7 @@ def top_performers(team, n, df, games_df=None):
         return pd.DataFrame()
 
     # Group by player and calculate averages
-    stat_cols = ["points", "assists", "rebounds"]
+    stat_cols = ["points", "assists", "rebounds", "steals"]
     grouped = team_players.groupby("name")[stat_cols].mean().round(1)
 
     # Add the number of games each player appeared in
@@ -317,6 +317,6 @@ def top_performers(team, n, df, games_df=None):
 
     # Sort by average points (highest first) and reset index for clean output
     grouped = grouped.sort_values("points", ascending=False).reset_index()
-    grouped.columns = ["player", "avg_points", "avg_assists", "avg_rebounds", "games"]
+    grouped.columns = ["player", "avg_points", "avg_assists", "avg_rebounds", "avg_steals", "games"]
 
     return grouped
