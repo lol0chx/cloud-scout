@@ -14,7 +14,7 @@ HEAD-TO-HEAD (last N meetings between two teams):
   python main.py --h2h "LA Lakers" "Boston Celtics" --last 5
   python main.py --h2h "Warriors" "Nuggets" --last 10
 
-TOP PERFORMERS (rank players on a team by avg points):
+TOP PERFORMERS (rank players on a team by avg points, assists, rebounds, steals):
   python main.py --top "LA Lakers" --last 5
   python main.py --top "Boston Celtics" --last 10
 
