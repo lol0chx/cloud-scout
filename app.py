@@ -35,7 +35,7 @@ conn = init_db()
 
 # --- Sidebar ---
 st.sidebar.header("Settings")
-num_games = st.sidebar.slider("Number of games", 1, 50, 10)
+num_games = st.sidebar.slider("Number of games", 1, 100, 10)
 
 st.sidebar.divider()
 st.sidebar.header("Scrape Data")
@@ -62,6 +62,23 @@ if st.sidebar.button("Scrape All Teams"):
             except Exception as e:
                 st.write(f"  Error: {e}")
         st.sidebar.success("All teams scraped!")
+    conn.close()
+    conn = init_db()
+
+st.sidebar.divider()
+if st.sidebar.button("Update All Teams", type="primary"):
+    with st.sidebar.status("Checking for new games...", expanded=True):
+        total_new_games = 0
+        for i, team in enumerate(ALL_TEAMS):
+            st.write(f"[{i+1}/30] {team}")
+            try:
+                games_new, _ = scrape_team(team, last=5)
+                if not games_new.empty:
+                    total_new_games += len(games_new)
+                    st.write(f"  +{len(games_new)} new game(s)")
+            except Exception as e:
+                st.write(f"  Error: {e}")
+        st.sidebar.success(f"Done! {total_new_games} new game(s) added.")
     conn.close()
     conn = init_db()
 
