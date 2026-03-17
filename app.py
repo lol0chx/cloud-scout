@@ -245,11 +245,12 @@ with tab_h2h:
                     tip = f"{row['date']} vs {opponent}: {int(scored)}-{int(conceded)}"
                     boxes.append(
                         f'<span title="{tip}" style="display:inline-flex;flex-direction:column;'
-                        f'align-items:center;justify-content:center;width:52px;height:52px;'
+                        f'align-items:center;justify-content:center;width:64px;height:64px;'
                         f'background:{color};border-radius:6px;margin:3px;'
                         f'color:white;font-weight:bold;">'
-                        f'<span style="font-size:16px;">{label}</span>'
-                        f'<span style="font-size:11px;">{("+" if won else "-")}{diff}</span>'
+                        f'<span style="font-size:15px;">{label}</span>'
+                        f'<span style="font-size:12px;">{int(scored)}-{int(conceded)}</span>'
+                        f'<span style="font-size:10px;opacity:0.85;">{("+" if won else "-")}{diff}</span>'
                         f'</span>'
                     )
                 return "".join(boxes)
@@ -276,6 +277,68 @@ with tab_h2h:
             col4.metric(f"{h2h_team_b} Wins", int(b_wins))
             col5.metric("Avg Points", round(h2h_df[b_col].mean(), 1))
             col6.metric("Avg Margin", f"{'+' if avg_diff_b >= 0 else ''}{avg_diff_b}")
+
+            st.markdown("---")
+
+            # --- Season Averages Comparison ---
+            st.markdown("#### Season Averages")
+
+            def season_avg(team, all_games):
+                tg = all_games[(all_games["home_team"] == team) | (all_games["away_team"] == team)]
+                if tg.empty:
+                    return None
+                scored = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
+                conceded = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
+                wins = (scored.values > conceded.values).sum()
+                return {
+                    "games": len(tg),
+                    "avg_scored": round(scored.mean(), 1),
+                    "avg_conceded": round(conceded.mean(), 1),
+                    "win_pct": round(wins / len(tg) * 100, 1),
+                }
+
+            sa = season_avg(h2h_team_a, games_df)
+            sb = season_avg(h2h_team_b, games_df)
+
+            if sa and sb:
+                stats_config = [
+                    ("Avg Points Scored", "avg_scored", True),
+                    ("Avg Points Conceded", "avg_conceded", False),
+                    ("Win %", "win_pct", True),
+                    ("Games Played", "games", None),
+                ]
+
+                header_cols = st.columns([2, 1, 1])
+                header_cols[0].markdown("**Stat**")
+                header_cols[1].markdown(f"**{h2h_team_a}**")
+                header_cols[2].markdown(f"**{h2h_team_b}**")
+
+                for label, key, higher_is_better in stats_config:
+                    val_a = sa[key]
+                    val_b = sb[key]
+
+                    if higher_is_better is None or val_a == val_b:
+                        color_a = color_b = "#ffffff00"
+                    elif higher_is_better:
+                        color_a = "#2ea44f22" if val_a > val_b else "#ffffff00"
+                        color_b = "#2ea44f22" if val_b > val_a else "#ffffff00"
+                    else:
+                        color_a = "#2ea44f22" if val_a < val_b else "#ffffff00"
+                        color_b = "#2ea44f22" if val_b < val_a else "#ffffff00"
+
+                    disp_a = f"{val_a}%" if key == "win_pct" else val_a
+                    disp_b = f"{val_b}%" if key == "win_pct" else val_b
+
+                    row_cols = st.columns([2, 1, 1])
+                    row_cols[0].markdown(label)
+                    row_cols[1].markdown(
+                        f'<div style="background:{color_a};padding:4px 8px;border-radius:4px;">{disp_a}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    row_cols[2].markdown(
+                        f'<div style="background:{color_b};padding:4px 8px;border-radius:4px;">{disp_b}</div>',
+                        unsafe_allow_html=True,
+                    )
 
             st.markdown("---")
 
