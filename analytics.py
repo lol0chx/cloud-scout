@@ -286,6 +286,39 @@ def player_vs_team(player_name, opponent, n, df, games_df=None):
     return result
 
 
+def home_away_stats(team, df):
+    """
+    Calculate home and away performance stats for a team across all games.
+
+    Returns a dict with avg points scored/conceded and win % at home and away.
+    """
+    team_games = df[(df["home_team"] == team) | (df["away_team"] == team)].copy()
+
+    if team_games.empty:
+        return None
+
+    home_games = team_games[team_games["home_team"] == team].copy()
+    away_games = team_games[team_games["away_team"] == team].copy()
+
+    def stats(g, is_home):
+        if g.empty:
+            return {"games": 0, "avg_scored": 0, "avg_conceded": 0, "win_pct": 0}
+        scored = g["home_score"] if is_home else g["away_score"]
+        conceded = g["away_score"] if is_home else g["home_score"]
+        wins = (scored.values > conceded.values).sum()
+        return {
+            "games": len(g),
+            "avg_scored": round(scored.mean(), 1),
+            "avg_conceded": round(conceded.mean(), 1),
+            "win_pct": round(wins / len(g) * 100, 1),
+        }
+
+    return {
+        "home": stats(home_games, True),
+        "away": stats(away_games, False),
+    }
+
+
 def top_performers(team, n, df, games_df=None):
     """
     Rank players on a team by their average points over the last N team games.
