@@ -20,6 +20,7 @@ from analytics import (
     player_avg,
     player_vs_team,
     top_performers,
+    home_away_stats,
 )
 
 # Page config
@@ -219,26 +220,96 @@ with tab_h2h:
         if h2h_df.empty:
             st.info(f"No head-to-head data between {h2h_team_a} and {h2h_team_b} in the database. Try scraping more games.")
         else:
-            st.dataframe(h2h_df, use_container_width=True, hide_index=True)
-
-            # Summary stats below the table
             a_col = f"{h2h_team_a}_score"
             b_col = f"{h2h_team_b}_score"
             a_wins = (h2h_df["winner"] == h2h_team_a).sum()
             b_wins = (h2h_df["winner"] == h2h_team_b).sum()
 
-            st.metric("Total Games", len(h2h_df))
+            # --- W/L Game Strip (last 5 games each team overall) ---
+            st.markdown("#### Last 5 Games")
 
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric(f"{h2h_team_a} Wins", int(a_wins))
-            col2.metric(f"{h2h_team_a} Avg Points", round(h2h_df[a_col].mean(), 1))
-            col3.metric(f"{h2h_team_b} Wins", int(b_wins))
-            col4.metric(f"{h2h_team_b} Avg Points", round(h2h_df[b_col].mean(), 1))
+            def wl_strip_overall(team, all_games):
+                team_games = all_games[
+                    (all_games["home_team"] == team) | (all_games["away_team"] == team)
+                ].sort_values("date", ascending=False).head(5)
+                boxes = []
+                for _, row in team_games.iterrows():
+                    is_home = row["home_team"] == team
+                    scored = row["home_score"] if is_home else row["away_score"]
+                    conceded = row["away_score"] if is_home else row["home_score"]
+                    opponent = row["away_team"] if is_home else row["home_team"]
+                    won = scored > conceded
+                    diff = abs(scored - conceded)
+                    color = "#2ea44f" if won else "#cf222e"
+                    label = "W" if won else "L"
+                    tip = f"{row['date']} vs {opponent}: {int(scored)}-{int(conceded)}"
+                    boxes.append(
+                        f'<span title="{tip}" style="display:inline-flex;flex-direction:column;'
+                        f'align-items:center;justify-content:center;width:52px;height:52px;'
+                        f'background:{color};border-radius:6px;margin:3px;'
+                        f'color:white;font-weight:bold;">'
+                        f'<span style="font-size:16px;">{label}</span>'
+                        f'<span style="font-size:11px;">{("+" if won else "-")}{diff}</span>'
+                        f'</span>'
+                    )
+                return "".join(boxes)
 
-            # Average combined game total — centered
-            avg_total = round((h2h_df[a_col] + h2h_df[b_col]).mean(), 1)
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"**{h2h_team_a}**")
+                st.markdown(wl_strip_overall(h2h_team_a, games_df), unsafe_allow_html=True)
+            with col2:
+                st.markdown(f"**{h2h_team_b}**")
+                st.markdown(wl_strip_overall(h2h_team_b, games_df), unsafe_allow_html=True)
+
             st.markdown("---")
+
+            # --- H2H Summary Stats ---
+            st.markdown("#### H2H Summary")
+            avg_diff_a = round((h2h_df[a_col] - h2h_df[b_col]).mean(), 1)
+            avg_diff_b = round((h2h_df[b_col] - h2h_df[a_col]).mean(), 1)
+
+            col1, col2, col3, col4, col5, col6 = st.columns(6)
+            col1.metric(f"{h2h_team_a} Wins", int(a_wins))
+            col2.metric("Avg Points", round(h2h_df[a_col].mean(), 1))
+            col3.metric("Avg Margin", f"{'+' if avg_diff_a >= 0 else ''}{avg_diff_a}")
+            col4.metric(f"{h2h_team_b} Wins", int(b_wins))
+            col5.metric("Avg Points", round(h2h_df[b_col].mean(), 1))
+            col6.metric("Avg Margin", f"{'+' if avg_diff_b >= 0 else ''}{avg_diff_b}")
+
+            st.markdown("---")
+
+            # --- Home / Away Breakdown ---
+            st.markdown("#### Home & Away Performance (Overall)")
+            col1, col2 = st.columns(2)
+
+            for col, team in [(col1, h2h_team_a), (col2, h2h_team_b)]:
+                stats = home_away_stats(team, games_df)
+                with col:
+                    st.markdown(f"**{team}**")
+                    if stats:
+                        ha_df = pd.DataFrame([
+                            {"Location": "Home", "Games": stats["home"]["games"],
+                             "Avg Scored": stats["home"]["avg_scored"],
+                             "Avg Conceded": stats["home"]["avg_conceded"],
+                             "Win %": f"{stats['home']['win_pct']}%"},
+                            {"Location": "Away", "Games": stats["away"]["games"],
+                             "Avg Scored": stats["away"]["avg_scored"],
+                             "Avg Conceded": stats["away"]["avg_conceded"],
+                             "Win %": f"{stats['away']['win_pct']}%"},
+                        ])
+                        st.dataframe(ha_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No data available.")
+
+            st.markdown("---")
+
+            # --- Full Game Log ---
+            st.markdown("#### Full Game Log")
+            st.dataframe(h2h_df, use_container_width=True, hide_index=True)
+
             _, center, _ = st.columns([1, 1, 1])
+            avg_total = round((h2h_df[a_col] + h2h_df[b_col]).mean(), 1)
             center.metric("Avg Game Total Points", avg_total)
 
 # --- Tab 5: Top Performers ---
