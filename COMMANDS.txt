@@ -1,5 +1,6 @@
 CloudScout — Available Commands
 ================================
+python3 -m streamlit run app.py
 
 TEAM STATS (recent form, averages, rolling performance):
   python main.py --team "LA Lakers" --last 5
