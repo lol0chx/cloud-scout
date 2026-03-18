@@ -140,10 +140,12 @@ with tab_team:
         try:
             # Averages
             avg_df = last_n_avg(team_sel, num_games, games_df)
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             col1.metric("Games", int(avg_df["games"].iloc[0]))
             col2.metric("Avg Scored", avg_df["avg_scored"].iloc[0])
-            col3.metric("Avg Conceded", avg_df["avg_conceded"].iloc[0])
+            avg_total = round(avg_df["avg_scored"].iloc[0] + avg_df["avg_conceded"].iloc[0], 1)
+            col3.metric("Avg Total", avg_total)
+            col4.metric("Avg Conceded", avg_df["avg_conceded"].iloc[0])
 
             # Rolling form chart
             st.subheader("Rolling Form")
@@ -243,13 +245,15 @@ with tab_h2h:
                     color = "#2ea44f" if won else "#cf222e"
                     label = "W" if won else "L"
                     tip = f"{row['date']} vs {opponent}: {int(scored)}-{int(conceded)}"
+                    total = int(scored) + int(conceded)
                     boxes.append(
                         f'<span title="{tip}" style="display:inline-flex;flex-direction:column;'
-                        f'align-items:center;justify-content:center;width:64px;height:64px;'
+                        f'align-items:center;justify-content:center;width:64px;height:74px;'
                         f'background:{color};border-radius:6px;margin:3px;'
                         f'color:white;font-weight:bold;">'
                         f'<span style="font-size:15px;">{label}</span>'
                         f'<span style="font-size:12px;">{int(scored)}-{int(conceded)}</span>'
+                        f'<span style="font-size:10px;opacity:0.75;">{total}</span>'
                         f'<span style="font-size:10px;opacity:0.85;">{("+" if won else "-")}{diff}</span>'
                         f'</span>'
                     )
@@ -270,13 +274,14 @@ with tab_h2h:
             avg_diff_a = round((h2h_df[a_col] - h2h_df[b_col]).mean(), 1)
             avg_diff_b = round((h2h_df[b_col] - h2h_df[a_col]).mean(), 1)
 
-            col1, col2, col3, col4, col5, col6 = st.columns(6)
+            col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
             col1.metric(f"{h2h_team_a} Wins", int(a_wins))
             col2.metric("Avg Points", round(h2h_df[a_col].mean(), 1))
             col3.metric("Avg Margin", f"{'+' if avg_diff_a >= 0 else ''}{avg_diff_a}")
-            col4.metric(f"{h2h_team_b} Wins", int(b_wins))
-            col5.metric("Avg Points", round(h2h_df[b_col].mean(), 1))
-            col6.metric("Avg Margin", f"{'+' if avg_diff_b >= 0 else ''}{avg_diff_b}")
+            col4.metric("Avg Total", round((h2h_df[a_col] + h2h_df[b_col]).mean(), 1))
+            col5.metric(f"{h2h_team_b} Wins", int(b_wins))
+            col6.metric("Avg Points", round(h2h_df[b_col].mean(), 1))
+            col7.metric("Avg Margin", f"{'+' if avg_diff_b >= 0 else ''}{avg_diff_b}")
 
             st.markdown("---")
 
