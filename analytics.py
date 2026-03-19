@@ -319,6 +319,149 @@ def home_away_stats(team, df):
     }
 
 
+def win_streak(team, df):
+    """Return the current win or loss streak for a team as (count, 'W' or 'L')."""
+    team_games = df[(df["home_team"] == team) | (df["away_team"] == team)]
+    if team_games.empty:
+        return 0, "W"
+    team_games = team_games.sort_values("date", ascending=False)
+    streak_type = None
+    streak_count = 0
+    for _, row in team_games.iterrows():
+        is_home = row["home_team"] == team
+        scored = row["home_score"] if is_home else row["away_score"]
+        conceded = row["away_score"] if is_home else row["home_score"]
+        result = "W" if scored > conceded else "L"
+        if streak_type is None:
+            streak_type = result
+            streak_count = 1
+        elif result == streak_type:
+            streak_count += 1
+        else:
+            break
+    return streak_count, streak_type
+
+
+def season_standings(df):
+    """Compute W/L record and key stats for all teams currently in the database."""
+    teams = sorted(set(df["home_team"].tolist() + df["away_team"].tolist()))
+    rows = []
+    for team in teams:
+        team_games = df[(df["home_team"] == team) | (df["away_team"] == team)]
+        if team_games.empty:
+            continue
+        scored = team_games.apply(
+            lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1
+        )
+        conceded = team_games.apply(
+            lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1
+        )
+        wins = int((scored.values > conceded.values).sum())
+        losses = len(team_games) - wins
+        streak_count, streak_type = win_streak(team, df)
+        rows.append({
+            "Team": team,
+            "W": wins,
+            "L": losses,
+            "GP": len(team_games),
+            "Win%": round(wins / len(team_games) * 100, 1),
+            "Avg Pts": round(scored.mean(), 1),
+            "Avg Allowed": round(conceded.mean(), 1),
+            "Net Rtg": round(scored.mean() - conceded.mean(), 1),
+            "Streak": f"{streak_type}{streak_count}",
+        })
+    return pd.DataFrame(rows).sort_values("Win%", ascending=False).reset_index(drop=True)
+
+
+def win_probability(team_a, team_b, df, home_team=None):
+    """
+    Estimate win probability using overall win%, H2H record, and home/away splits.
+    Weights: overall 35%, H2H 30%, home/away 35%.
+    Returns (prob_a, prob_b, predicted_margin) where margin is from team_a's perspective.
+    """
+    def _win_pct(team):
+        tg = df[(df["home_team"] == team) | (df["away_team"] == team)]
+        if tg.empty:
+            return 0.5
+        s = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
+        c = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
+        return (s.values > c.values).mean()
+
+    def _home_win_pct(team):
+        hg = df[df["home_team"] == team]
+        if hg.empty:
+            return _win_pct(team)
+        return (hg["home_score"] > hg["away_score"]).mean()
+
+    def _away_win_pct(team):
+        ag = df[df["away_team"] == team]
+        if ag.empty:
+            return _win_pct(team)
+        return (ag["away_score"] > ag["home_score"]).mean()
+
+    def _avg_margin(team):
+        tg = df[(df["home_team"] == team) | (df["away_team"] == team)]
+        if tg.empty:
+            return 0
+        s = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
+        c = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
+        return (s - c).mean()
+
+    h2h = df[
+        ((df["home_team"] == team_a) & (df["away_team"] == team_b)) |
+        ((df["home_team"] == team_b) & (df["away_team"] == team_a))
+    ]
+    if not h2h.empty:
+        a_s = h2h.apply(lambda r: r["home_score"] if r["home_team"] == team_a else r["away_score"], axis=1)
+        b_s = h2h.apply(lambda r: r["home_score"] if r["home_team"] == team_b else r["away_score"], axis=1)
+        h2h_pct_a = (a_s.values > b_s.values).mean()
+    else:
+        h2h_pct_a = 0.5
+
+    wp_a = _win_pct(team_a)
+    wp_b = _win_pct(team_b)
+
+    if home_team == team_a:
+        ha_a = _home_win_pct(team_a)
+        ha_b = _away_win_pct(team_b)
+    elif home_team == team_b:
+        ha_a = _away_win_pct(team_a)
+        ha_b = _home_win_pct(team_b)
+    else:
+        ha_a, ha_b = wp_a, wp_b
+
+    score_a = wp_a * 0.35 + h2h_pct_a * 0.30 + ha_a * 0.35
+    score_b = wp_b * 0.35 + (1 - h2h_pct_a) * 0.30 + ha_b * 0.35
+    total = score_a + score_b
+    prob_a = round(score_a / total * 100, 1) if total > 0 else 50.0
+    prob_b = round(100 - prob_a, 1)
+    margin = round(_avg_margin(team_a) - _avg_margin(team_b), 1)
+    return prob_a, prob_b, margin
+
+
+def possible_injured_players(team, players_df, games_df):
+    """
+    Flag players who appeared in the 3 games before the most recent game
+    but did not play in the most recent game. Returns sorted list of names.
+    """
+    if players_df.empty or games_df.empty:
+        return []
+    team_games = games_df[
+        (games_df["home_team"] == team) | (games_df["away_team"] == team)
+    ].sort_values("date", ascending=False)
+    if len(team_games) < 2:
+        return []
+    latest_id = int(team_games.iloc[0]["id"])
+    prev_ids = team_games.iloc[1:4]["id"].astype(int).tolist()
+    latest_players = set(
+        players_df[(players_df["team"] == team) & (players_df["game_id"] == latest_id)]["name"]
+    )
+    prev_players = set(
+        players_df[(players_df["team"] == team) & (players_df["game_id"].isin(prev_ids))]["name"]
+    )
+    return sorted(prev_players - latest_players)
+
+
 def top_performers(team, n, df, games_df=None):
     """
     Rank players on a team by their average points over the last N team games.
