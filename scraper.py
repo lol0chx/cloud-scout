@@ -124,10 +124,19 @@ def fetch_games(team, season=DEFAULT_SEASON, last=15):
         game_id = row["Game_ID"]  # string like "0022500123"
         game_id_int = int(game_id)  # store as int in the database
 
-        # Skip games we already have in the database
+        # Skip games we already have in the database, unless they have 0 scores (corrupt)
         if game_exists(conn, game_id_int):
-            print(f"  Game {game_id} already in DB, skipping.")
-            continue
+            cursor = conn.cursor()
+            cursor.execute("SELECT home_score, away_score FROM games WHERE id = ?", (game_id_int,))
+            row = cursor.fetchone()
+            if row and not (row[0] == 0 and row[1] == 0):
+                print(f"  Game {game_id} already in DB, skipping.")
+                continue
+            # Corrupt 0-0 record — delete and re-fetch
+            print(f"  Game {game_id} has 0-0 score, re-fetching...")
+            cursor.execute("DELETE FROM games WHERE id = ?", (game_id_int,))
+            cursor.execute("DELETE FROM players WHERE game_id = ?", (game_id_int,))
+            conn.commit()
 
         # Parse MATCHUP to determine home/away
         # Format: "LAL vs. BOS" (home) or "LAL @ BOS" (away)
