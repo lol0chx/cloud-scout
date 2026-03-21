@@ -157,6 +157,9 @@ def rolling_form(team, window, df):
     team_games = team_games.sort_values("date", ascending=True)
 
     # Determine opponent and points scored for each game
+    team_games["location"] = team_games.apply(
+        lambda row: "Home" if row["home_team"] == team else "Away", axis=1
+    )
     team_games["opponent"] = team_games.apply(
         lambda row: row["away_team"] if row["home_team"] == team else row["home_team"],
         axis=1,
@@ -165,13 +168,21 @@ def rolling_form(team, window, df):
         lambda row: row["home_score"] if row["home_team"] == team else row["away_score"],
         axis=1,
     )
+    team_games["conceded"] = team_games.apply(
+        lambda row: row["away_score"] if row["home_team"] == team else row["home_score"],
+        axis=1,
+    )
+    team_games["result"] = team_games.apply(
+        lambda row: "W" if row["scored"] > row["conceded"] else "L", axis=1
+    )
+    team_games["margin"] = team_games["scored"] - team_games["conceded"]
 
     # Apply the rolling average — min_periods=1 so early games still show a value
     team_games["rolling_avg"] = (
         team_games["scored"].rolling(window=window, min_periods=1).mean().round(1)
     )
 
-    return team_games[["date", "opponent", "scored", "rolling_avg"]]
+    return team_games[["date", "location", "opponent", "result", "scored", "conceded", "margin", "rolling_avg"]]
 
 
 def player_avg(player_name, n, df):
