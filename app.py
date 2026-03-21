@@ -115,7 +115,7 @@ if st.sidebar.button("Update All Teams", type="primary"):
         for i, team in enumerate(ALL_TEAMS):
             st.write(f"[{i+1}/30] {team}")
             try:
-                games_new, _ = scrape_team(team, last=5)
+                games_new, _ = scrape_team(team, last=10)
                 if not games_new.empty:
                     total_new_games += len(games_new)
                     st.write(f"  +{len(games_new)} new game(s)")
@@ -201,8 +201,13 @@ with tab_team:
             form_df = rolling_form(team_sel, num_games, games_df)
             st.line_chart(form_df.set_index("date")["rolling_avg"])
 
-            # Rolling form table
-            st.dataframe(form_df, use_container_width=True, hide_index=True)
+            # Game log table — rename columns for display and add margin sign
+            display_df = form_df.copy()
+            display_df["margin"] = display_df["margin"].apply(
+                lambda x: f"+{int(x)}" if x > 0 else str(int(x))
+            )
+            display_df.columns = ["Date", "Location", "Opponent", "W/L", "Pts", "Opp Pts", "Margin", "Rolling Avg"]
+            st.dataframe(display_df.sort_values("Date", ascending=False), use_container_width=True, hide_index=True)
         except ValueError as e:
             st.warning(str(e))
 
