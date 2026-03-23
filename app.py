@@ -7,6 +7,9 @@ head-to-head matchups, and team performance analytics.
 Run with: streamlit run app.py
 """
 
+import os
+
+import anthropic
 import streamlit as st
 import pandas as pd
 from nba_api.stats.static import teams as nba_teams
@@ -126,8 +129,8 @@ if st.sidebar.button("Update All Teams", type="primary"):
     conn = init_db()
 
 # --- Main tabs ---
-tab_games, tab_team, tab_player, tab_h2h, tab_top, tab_standings, tab_pred = st.tabs(
-    ["Game Results", "Team Form", "Player Stats", "Head-to-Head", "Top Performers", "Standings", "Predictions"]
+tab_games, tab_team, tab_player, tab_h2h, tab_top, tab_standings, tab_pred, tab_ai = st.tabs(
+    ["Game Results", "Team Form", "Player Stats", "Head-to-Head", "Top Performers", "Standings", "Predictions", "AI Scout"]
 )
 
 # --- Tab 1: Game Results ---
@@ -547,6 +550,70 @@ with tab_pred:
                 ctx_col.markdown(f"**{team}**")
                 ctx_col.markdown(f"Season: **{wins}W–{len(tg)-wins}L** ({wp}%)")
                 ctx_col.markdown(f"Streak: **{st_type}{sc}**")
+
+# --- Tab 8: AI Scout ---
+with tab_ai:
+    st.subheader("AI Scout")
+    st.caption("Ask anything about the teams and players in your database.")
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+
+    if not api_key:
+        st.warning("Set your `ANTHROPIC_API_KEY` environment variable to use AI Scout.")
+        st.code("export ANTHROPIC_API_KEY='sk-ant-...'", language="bash")
+    else:
+        if "ai_messages" not in st.session_state:
+            st.session_state.ai_messages = []
+
+        # Render chat history
+        for msg in st.session_state.ai_messages:
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
+
+        if prompt := st.chat_input("Ask about teams, players, or matchups..."):
+            st.session_state.ai_messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.write(prompt)
+
+            # Build context from the database
+            context_parts = []
+            if not games_df.empty:
+                recent = games_df.sort_values("date", ascending=False).head(30)
+                context_parts.append(
+                    "Recent games:\n" +
+                    recent[["date", "home_team", "away_team", "home_score", "away_score"]].to_string(index=False)
+                )
+                standings = season_standings(games_df)
+                context_parts.append("Standings:\n" + standings.to_string(index=False))
+
+            if not players_df.empty:
+                top_scorers = (
+                    players_df.groupby("name")
+                    .agg(avg_pts=("points", "mean"), avg_reb=("rebounds", "mean"), avg_ast=("assists", "mean"), games=("game_id", "count"))
+                    .sort_values("avg_pts", ascending=False)
+                    .head(30)
+                    .round(1)
+                )
+                context_parts.append("Top scorers:\n" + top_scorers.to_string())
+
+            context = "\n\n".join(context_parts) if context_parts else "No data in the database yet."
+
+            full_prompt = f"Database stats:\n{context}\n\nQuestion: {prompt}"
+
+            with st.chat_message("assistant"):
+                client = anthropic.Anthropic(api_key=api_key)
+                with client.messages.stream(
+                    model="claude-opus-4-6",
+                    max_tokens=1024,
+                    system=(
+                        "You are AI Scout, an expert NBA analyst. Answer questions using only the stats "
+                        "data provided. Be concise and insightful. If something isn't in the data, say so."
+                    ),
+                    messages=[{"role": "user", "content": full_prompt}],
+                ) as stream:
+                    response_text = st.write_stream(stream.text_stream)
+
+            st.session_state.ai_messages.append({"role": "assistant", "content": response_text})
 
 # Close connection
 conn.close()
