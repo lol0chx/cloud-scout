@@ -1,4 +1,6 @@
 nba_api
+MLB-StatsAPI
 pandas
 schedule
 streamlit
+anthropic
