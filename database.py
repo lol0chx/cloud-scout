@@ -60,6 +60,34 @@ def init_db(db_path="cloudscout.db"):
         )
     """)
 
+    # MLB players table — separate from NBA players because stats differ
+    # fundamentally between batters and pitchers. role = 'batter' or 'pitcher'.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS mlb_players (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            team TEXT NOT NULL,
+            date TEXT NOT NULL,
+            game_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            at_bats INTEGER,
+            hits INTEGER,
+            runs INTEGER,
+            home_runs INTEGER,
+            rbi INTEGER,
+            walks INTEGER,
+            strikeouts INTEGER,
+            innings_pitched REAL,
+            hits_allowed INTEGER,
+            earned_runs INTEGER,
+            walks_allowed INTEGER,
+            strikeouts_pitched INTEGER,
+            home_runs_allowed INTEGER,
+            FOREIGN KEY (game_id) REFERENCES games(id),
+            UNIQUE (name, game_id, role)
+        )
+    """)
+
     conn.commit()
     return conn
 
@@ -137,6 +165,71 @@ def insert_players(conn, players):
         for p in players
     ])
     conn.commit()
+
+
+def insert_mlb_players(conn, players):
+    """
+    Bulk insert MLB player stats (batters and pitchers) for a game.
+    Uses INSERT OR IGNORE with the (name, game_id, role) unique constraint.
+
+    Args:
+        conn: SQLite connection object
+        players: list of dicts with keys matching the mlb_players table columns
+    """
+    cursor = conn.cursor()
+    cursor.executemany("""
+        INSERT OR IGNORE INTO mlb_players
+            (name, team, date, game_id, role,
+             at_bats, hits, runs, home_runs, rbi, walks, strikeouts,
+             innings_pitched, hits_allowed, earned_runs, walks_allowed,
+             strikeouts_pitched, home_runs_allowed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [
+        (
+            p["name"], p["team"], p["date"], p["game_id"], p["role"],
+            p.get("at_bats"), p.get("hits"), p.get("runs"),
+            p.get("home_runs"), p.get("rbi"), p.get("walks"),
+            p.get("strikeouts"),
+            p.get("innings_pitched"), p.get("hits_allowed"),
+            p.get("earned_runs"), p.get("walks_allowed"),
+            p.get("strikeouts_pitched"), p.get("home_runs_allowed"),
+        )
+        for p in players
+    ])
+    conn.commit()
+
+
+def load_mlb_players(conn, player_name=None, team=None, role=None):
+    """
+    Load MLB player statistics from the database into a pandas DataFrame.
+    Optionally filter by player name (partial), team, and/or role ('batter'/'pitcher').
+
+    Args:
+        conn: SQLite connection object
+        player_name: optional player name to search for (partial match)
+        team: optional team name to filter by
+        role: optional role to filter by ('batter' or 'pitcher')
+
+    Returns:
+        pandas DataFrame of matching MLB player stat records
+    """
+    query = "SELECT * FROM mlb_players WHERE 1=1"
+    params = []
+
+    if player_name:
+        query += " AND name LIKE ?"
+        params.append(f"%{player_name}%")
+
+    if team:
+        query += " AND team = ?"
+        params.append(team)
+
+    if role:
+        query += " AND role = ?"
+        params.append(role)
+
+    query += " ORDER BY date DESC"
+    return pd.read_sql_query(query, conn, params=params)
 
 
 def load_games(conn, team=None, league="NBA"):
