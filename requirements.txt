@@ -4,3 +4,5 @@ pandas
 schedule
 streamlit
 anthropic
+fastapi
+uvicorn[standard]
