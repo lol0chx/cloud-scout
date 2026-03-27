@@ -1,9 +1,7 @@
 """
 app.py — Streamlit dashboard for CloudScout.
 
-Provides a web-based UI for browsing NBA game results, player stats,
-head-to-head matchups, and team performance analytics.
-
+Multi-sport analytics: NBA and MLB. Switch sports with the sidebar selector.
 Run with: streamlit run app.py
 """
 
@@ -14,8 +12,9 @@ import streamlit as st
 import pandas as pd
 from nba_api.stats.static import teams as nba_teams
 
-from database import init_db, load_games, load_players
-from scraper import scrape_team, _resolve_team
+from database import init_db, load_games, load_players, load_mlb_players
+from scraper import scrape_team
+from mlb_scraper import scrape_mlb_team, get_all_mlb_teams, DEFAULT_SEASON as MLB_DEFAULT_SEASON
 from analytics import (
     last_n_avg,
     head_to_head,
@@ -24,31 +23,70 @@ from analytics import (
     player_vs_team,
     top_performers,
     home_away_stats,
-    win_streak,           # current W/L streak for a team
-    season_standings,     # ranks all teams in DB by win%
-    win_probability,      # estimates win chance using win%, H2H, home/away
-    possible_injured_players,  # flags players missing from the most recent game
+    win_streak,
+    season_standings,
+    win_probability,
+    possible_injured_players,
+)
+from mlb_analytics import (
+    mlb_batter_avg,
+    mlb_pitcher_avg,
+    mlb_batter_vs_team,
+    mlb_top_batters,
+    mlb_top_pitchers,
+    mlb_possible_injured_players,
 )
 
-# Page config
-st.set_page_config(page_title="CloudScout", page_icon="🏀", layout="wide")
-st.title("🏀 CloudScout")
-st.caption("NBA Stats Scraper & Analytics Dashboard")
+# ── Page config ──────────────────────────────────────────────────────────────
+st.set_page_config(page_title="CloudScout", page_icon="🏟", layout="wide")
+st.title("🏟 CloudScout")
+st.caption("Multi-Sport Stats & Analytics Dashboard")
 
-# Build team list from nba_api static data
-ALL_TEAMS = sorted([t["full_name"] for t in nba_teams.get_teams()])
+# ── Sport selector ────────────────────────────────────────────────────────────
+sport = st.sidebar.radio("Sport", ["🏀 NBA", "⚾ MLB"], horizontal=True)
+IS_MLB = sport == "⚾ MLB"
+st.sidebar.divider()
 
-# Initialize database connection and load data up front
-# (loaded early so the sidebar watchlist can reference game results)
+# ── Team lists ────────────────────────────────────────────────────────────────
+NBA_TEAMS = sorted([t["full_name"] for t in nba_teams.get_teams()])
+
+
+@st.cache_data
+def _mlb_teams():
+    try:
+        return get_all_mlb_teams()
+    except Exception:
+        return [
+            "Arizona Diamondbacks", "Atlanta Braves", "Baltimore Orioles",
+            "Boston Red Sox", "Chicago Cubs", "Chicago White Sox",
+            "Cincinnati Reds", "Cleveland Guardians", "Colorado Rockies",
+            "Detroit Tigers", "Houston Astros", "Kansas City Royals",
+            "Los Angeles Angels", "Los Angeles Dodgers", "Miami Marlins",
+            "Milwaukee Brewers", "Minnesota Twins", "New York Mets",
+            "New York Yankees", "Athletics", "Philadelphia Phillies",
+            "Pittsburgh Pirates", "San Diego Padres", "San Francisco Giants",
+            "Seattle Mariners", "St. Louis Cardinals", "Tampa Bay Rays",
+            "Texas Rangers", "Toronto Blue Jays", "Washington Nationals",
+        ]
+
+
+MLB_TEAMS = _mlb_teams()
+ALL_TEAMS = MLB_TEAMS if IS_MLB else NBA_TEAMS
+
+# ── Database connection & data load ──────────────────────────────────────────
 conn = init_db()
-games_df = load_games(conn)
-players_df = load_players(conn)
+games_df = load_games(conn, league="MLB" if IS_MLB else "NBA")
+players_df = load_mlb_players(conn) if IS_MLB else load_players(conn)
 
-# --- Sidebar ---
+# ── Sidebar: Settings ─────────────────────────────────────────────────────────
 st.sidebar.header("Settings")
 num_games = st.sidebar.slider("Number of games", 1, 100, 10)
+if IS_MLB:
+    mlb_season = st.sidebar.slider("Season", 2020, 2026, MLB_DEFAULT_SEASON)
 
 st.sidebar.divider()
+
+# ── Sidebar: Scrape Data ──────────────────────────────────────────────────────
 st.sidebar.header("Scrape Data")
 scrape_team_name = st.sidebar.selectbox("Team to scrape", ALL_TEAMS, key="scrape_team")
 scrape_count = st.sidebar.slider("Games to scrape", 5, 50, 15, key="scrape_count")
@@ -56,41 +94,49 @@ scrape_count = st.sidebar.slider("Games to scrape", 5, 50, 15, key="scrape_count
 if st.sidebar.button("Scrape Team"):
     with st.sidebar.status(f"Scraping {scrape_team_name}...", expanded=True):
         try:
-            games_df, players_df = scrape_team(scrape_team_name, last=scrape_count)
-            st.sidebar.success(f"Saved {len(games_df)} games, {len(players_df)} player lines.")
+            if IS_MLB:
+                g, p = scrape_mlb_team(scrape_team_name, season=mlb_season, last=scrape_count)
+            else:
+                g, p = scrape_team(scrape_team_name, last=scrape_count)
+            st.sidebar.success(f"Saved {len(g)} games, {len(p)} player lines.")
         except Exception as e:
             st.sidebar.error(f"Error: {e}")
-    # Refresh connection to pick up new data
     conn.close()
     conn = init_db()
+    games_df = load_games(conn, league="MLB" if IS_MLB else "NBA")
+    players_df = load_mlb_players(conn) if IS_MLB else load_players(conn)
 
 if st.sidebar.button("Scrape All Teams"):
-    with st.sidebar.status("Scraping all 30 teams...", expanded=True):
+    with st.sidebar.status(f"Scraping all {len(ALL_TEAMS)} teams...", expanded=True):
         for i, team in enumerate(ALL_TEAMS):
-            st.write(f"[{i+1}/30] {team}")
+            st.write(f"[{i+1}/{len(ALL_TEAMS)}] {team}")
             try:
-                scrape_team(team, last=scrape_count)
+                if IS_MLB:
+                    scrape_mlb_team(team, season=mlb_season, last=scrape_count)
+                else:
+                    scrape_team(team, last=scrape_count)
             except Exception as e:
                 st.write(f"  Error: {e}")
         st.sidebar.success("All teams scraped!")
     conn.close()
     conn = init_db()
+    games_df = load_games(conn, league="MLB" if IS_MLB else "NBA")
+    players_df = load_mlb_players(conn) if IS_MLB else load_players(conn)
 
 st.sidebar.divider()
 
-# --- Watchlist ---
-# Lets you pin teams and see their latest result + streak at a glance
+# ── Sidebar: Watchlist ────────────────────────────────────────────────────────
 st.sidebar.header("Watchlist")
-if "watchlist" not in st.session_state:
-    st.session_state.watchlist = []
+wl_key = "mlb_watchlist" if IS_MLB else "nba_watchlist"
+if wl_key not in st.session_state:
+    st.session_state[wl_key] = []
 
-wl_add = st.sidebar.selectbox("Add team to watchlist", [""] + ALL_TEAMS, key="wl_add")
-if st.sidebar.button("Add") and wl_add and wl_add not in st.session_state.watchlist:
-    st.session_state.watchlist.append(wl_add)
+wl_add = st.sidebar.selectbox("Add team to watchlist", [""] + ALL_TEAMS, key=f"wl_add_{sport}")
+if st.sidebar.button("Add") and wl_add and wl_add not in st.session_state[wl_key]:
+    st.session_state[wl_key].append(wl_add)
 
-for wl_team in list(st.session_state.watchlist):
+for wl_team in list(st.session_state[wl_key]):
     wl_col1, wl_col2 = st.sidebar.columns([3, 1])
-    # Show latest game result and streak for each watched team
     if not games_df.empty:
         tg = games_df[(games_df["home_team"] == wl_team) | (games_df["away_team"] == wl_team)]
         if not tg.empty:
@@ -107,33 +153,42 @@ for wl_team in list(st.session_state.watchlist):
             wl_col1.markdown(f"**{wl_team.split()[-1]}** — no data")
     else:
         wl_col1.markdown(f"**{wl_team}**")
-    if wl_col2.button("✕", key=f"rm_{wl_team}"):
-        st.session_state.watchlist.remove(wl_team)
+    if wl_col2.button("✕", key=f"rm_{sport}_{wl_team}"):
+        st.session_state[wl_key].remove(wl_team)
         st.rerun()
 
 st.sidebar.divider()
+
 if st.sidebar.button("Update All Teams", type="primary"):
     with st.sidebar.status("Checking for new games...", expanded=True):
-        total_new_games = 0
+        total_new = 0
         for i, team in enumerate(ALL_TEAMS):
-            st.write(f"[{i+1}/30] {team}")
+            st.write(f"[{i+1}/{len(ALL_TEAMS)}] {team}")
             try:
-                games_new, _ = scrape_team(team, last=10)
-                if not games_new.empty:
-                    total_new_games += len(games_new)
-                    st.write(f"  +{len(games_new)} new game(s)")
+                if IS_MLB:
+                    g, _ = scrape_mlb_team(team, season=mlb_season, last=10)
+                else:
+                    g, _ = scrape_team(team, last=10)
+                if not g.empty:
+                    total_new += len(g)
+                    st.write(f"  +{len(g)} new game(s)")
             except Exception as e:
                 st.write(f"  Error: {e}")
-        st.sidebar.success(f"Done! {total_new_games} new game(s) added.")
+        st.sidebar.success(f"Done! {total_new} new game(s) added.")
     conn.close()
     conn = init_db()
+    games_df = load_games(conn, league="MLB" if IS_MLB else "NBA")
+    players_df = load_mlb_players(conn) if IS_MLB else load_players(conn)
 
-# --- Main tabs ---
+# ── Main tabs ─────────────────────────────────────────────────────────────────
 tab_games, tab_team, tab_player, tab_h2h, tab_top, tab_standings, tab_pred, tab_ai = st.tabs(
-    ["Game Results", "Team Form", "Player Stats", "Head-to-Head", "Top Performers", "Standings", "Predictions", "AI Scout"]
+    ["Game Results", "Team Form", "Player Stats", "Head-to-Head",
+     "Top Performers", "Standings", "Predictions", "AI Scout"]
 )
 
-# --- Tab 1: Game Results ---
+# ═════════════════════════════════════════════════════════════════════════════
+# Tab 1: Game Results
+# ═════════════════════════════════════════════════════════════════════════════
 with tab_games:
     st.subheader("Game Results")
     team_filter = st.selectbox("Select team", ["All"] + ALL_TEAMS, key="games_team")
@@ -149,7 +204,7 @@ with tab_games:
         filtered = filtered.sort_values("date", ascending=False).head(num_games)
 
         if team_filter != "All" and not filtered.empty:
-            # Add W/L, score, and location columns
+            score_label = "Score (R)" if IS_MLB else "Score"
             results = []
             for _, row in filtered.iterrows():
                 is_home = row["home_team"] == team_filter
@@ -160,7 +215,7 @@ with tab_games:
                     "Date": row["date"],
                     "Opponent": opponent,
                     "Result": "W" if team_score > opp_score else "L",
-                    "Score": f"{team_score}-{opp_score}",
+                    score_label: f"{team_score}-{opp_score}",
                     "Location": "Home" if is_home else "Away",
                 })
             st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
@@ -170,58 +225,150 @@ with tab_games:
                 use_container_width=True, hide_index=True,
             )
 
-# --- Tab 2: Team Form ---
+# ═════════════════════════════════════════════════════════════════════════════
+# Tab 2: Team Form
+# ═════════════════════════════════════════════════════════════════════════════
 with tab_team:
     st.subheader("Team Form")
     team_sel = st.selectbox("Select team", ALL_TEAMS, key="form_team")
+
+    scored_label = "Avg Runs" if IS_MLB else "Avg Scored"
+    conceded_label = "Avg Allowed" if IS_MLB else "Avg Conceded"
+    net_label = "Run Diff" if IS_MLB else "Net Rating"
 
     if games_df.empty:
         st.info("No game data yet. Use the sidebar to scrape some teams first.")
     else:
         try:
-            # Averages + streak + net rating
             avg_df = last_n_avg(team_sel, num_games, games_df)
-            streak_count, streak_type = win_streak(team_sel, games_df)  # current W/L streak
+            streak_count, streak_type = win_streak(team_sel, games_df)
             avg_scored = avg_df["avg_scored"].iloc[0]
             avg_conceded = avg_df["avg_conceded"].iloc[0]
             avg_total = round(avg_scored + avg_conceded, 1)
-            net_rating = round(avg_scored - avg_conceded, 1)  # positive = better offense than defense
+            net = round(avg_scored - avg_conceded, 1)
 
             col1, col2, col3, col4, col5, col6 = st.columns(6)
             col1.metric("Games", int(avg_df["games"].iloc[0]))
-            # Streak shown in green for wins, red for losses
             streak_label = f"{streak_type}{streak_count}"
             streak_color = "normal" if streak_type == "W" else "inverse"
             col2.metric("Streak", streak_label, delta=f"{streak_count} in a row", delta_color=streak_color)
-            col3.metric("Avg Scored", avg_scored)
+            col3.metric(scored_label, avg_scored)
             col4.metric("Avg Total", avg_total)
-            col5.metric("Avg Conceded", avg_conceded)
-            # Net Rating = avg pts scored minus avg pts allowed — positive is good
-            col6.metric("Net Rating", f"{'+' if net_rating >= 0 else ''}{net_rating}")
+            col5.metric(conceded_label, avg_conceded)
+            col6.metric(net_label, f"{'+' if net >= 0 else ''}{net}")
 
-            # Rolling form chart
             st.subheader("Rolling Form")
             form_df = rolling_form(team_sel, num_games, games_df)
             st.line_chart(form_df.set_index("date")["rolling_avg"])
 
-            # Game log table — rename columns for display and add margin sign
             display_df = form_df.copy()
             display_df["margin"] = display_df["margin"].apply(
                 lambda x: f"+{int(x)}" if x > 0 else str(int(x))
             )
-            display_df.columns = ["Date", "Location", "Opponent", "W/L", "Pts", "Opp Pts", "Margin", "Rolling Avg"]
+            if IS_MLB:
+                display_df.columns = ["Date", "Location", "Opponent", "W/L", "R", "RA", "Margin", "Rolling Avg"]
+            else:
+                display_df.columns = ["Date", "Location", "Opponent", "W/L", "Pts", "Opp Pts", "Margin", "Rolling Avg"]
             st.dataframe(display_df.sort_values("Date", ascending=False), use_container_width=True, hide_index=True)
         except ValueError as e:
             st.warning(str(e))
 
-# --- Tab 3: Player Stats ---
+# ═════════════════════════════════════════════════════════════════════════════
+# Tab 3: Player Stats
+# ═════════════════════════════════════════════════════════════════════════════
 with tab_player:
     st.subheader("Player Stats")
 
     if players_df.empty:
         st.info("No player data yet. Use the sidebar to scrape some teams first.")
+    elif IS_MLB:
+        # ── MLB: separate Batters / Pitchers sub-tabs ─────────────────────
+        batter_tab, pitcher_tab = st.tabs(["Batters", "Pitchers"])
+
+        batters_df = players_df[players_df["role"] == "batter"]
+        pitchers_df = players_df[players_df["role"] == "pitcher"]
+
+        with batter_tab:
+            search_query = st.text_input("Search batter", placeholder="e.g. Judge", key="batter_search")
+            batter_names = sorted(batters_df["name"].unique().tolist())
+            if search_query:
+                batter_names = [n for n in batter_names if search_query.lower() in n.lower()]
+            if not batter_names:
+                st.warning("No batters match your search.")
+            else:
+                batter_sel = st.selectbox("Select batter", batter_names, key="batter_sel")
+
+                # Injury watch
+                batter_team_rows = batters_df[batters_df["name"] == batter_sel]
+                if not batter_team_rows.empty:
+                    batter_team = batter_team_rows.iloc[0]["team"]
+                    injured = mlb_possible_injured_players(batter_team, players_df, games_df)
+                    if batter_sel in injured:
+                        st.warning(f"⚠️ {batter_sel} did not play in {batter_team}'s most recent game.")
+
+                col_left, col_right = st.columns(2)
+                with col_left:
+                    st.markdown("**Season Totals / Averages**")
+                    try:
+                        st.dataframe(mlb_batter_avg(batter_sel, num_games, players_df),
+                                     use_container_width=True, hide_index=True)
+                    except ValueError as e:
+                        st.warning(str(e))
+
+                with col_right:
+                    st.markdown("**vs Specific Team**")
+                    opp_sel = st.selectbox("Opponent", MLB_TEAMS, key="bvt_opp")
+                    try:
+                        pvt = mlb_batter_vs_team(batter_sel, opp_sel, num_games, players_df, games_df)
+                        if pvt.empty:
+                            st.info(f"No data for {batter_sel} vs {opp_sel}.")
+                        else:
+                            st.dataframe(pvt, use_container_width=True, hide_index=True)
+                    except Exception as e:
+                        st.warning(str(e))
+
+                st.markdown("**Game Log**")
+                log = batters_df[batters_df["name"] == batter_sel].sort_values("date", ascending=False).head(num_games)
+                log = log.merge(games_df[["id", "home_team", "away_team"]], left_on="game_id", right_on="id", how="left")
+                log["opponent"] = log.apply(
+                    lambda r: r["away_team"] if r["team"] == r["home_team"] else r["home_team"], axis=1
+                )
+                st.dataframe(
+                    log[["date", "opponent", "at_bats", "hits", "home_runs", "rbi", "runs", "walks", "strikeouts"]],
+                    use_container_width=True, hide_index=True,
+                )
+
+        with pitcher_tab:
+            search_query = st.text_input("Search pitcher", placeholder="e.g. Cole", key="pitcher_search")
+            pitcher_names = sorted(pitchers_df["name"].unique().tolist())
+            if search_query:
+                pitcher_names = [n for n in pitcher_names if search_query.lower() in n.lower()]
+            if not pitcher_names:
+                st.warning("No pitchers match your search.")
+            else:
+                pitcher_sel = st.selectbox("Select pitcher", pitcher_names, key="pitcher_sel")
+
+                st.markdown("**Season Stats**")
+                try:
+                    st.dataframe(mlb_pitcher_avg(pitcher_sel, num_games, players_df),
+                                 use_container_width=True, hide_index=True)
+                except ValueError as e:
+                    st.warning(str(e))
+
+                st.markdown("**Game Log**")
+                log = pitchers_df[pitchers_df["name"] == pitcher_sel].sort_values("date", ascending=False).head(num_games)
+                log = log.merge(games_df[["id", "home_team", "away_team"]], left_on="game_id", right_on="id", how="left")
+                log["opponent"] = log.apply(
+                    lambda r: r["away_team"] if r["team"] == r["home_team"] else r["home_team"], axis=1
+                )
+                st.dataframe(
+                    log[["date", "opponent", "innings_pitched", "hits_allowed", "earned_runs",
+                          "walks_allowed", "strikeouts_pitched", "home_runs_allowed"]],
+                    use_container_width=True, hide_index=True,
+                )
+
     else:
-        # Search bar — filters the player list as you type
+        # ── NBA player stats ──────────────────────────────────────────────
         search_query = st.text_input("Search player", placeholder="e.g. LeBron", key="player_search")
         player_names = sorted(players_df["name"].unique().tolist())
         if search_query:
@@ -231,8 +378,6 @@ with tab_player:
             st.stop()
         player_sel = st.selectbox("Select player", player_names, key="player_sel")
 
-        # Injury Watch — highlight players who missed the most recent team game
-        # We find their team from the player data, then check if they were missing
         player_team_rows = players_df[players_df["name"] == player_sel]
         if not player_team_rows.empty:
             player_team = player_team_rows.iloc[0]["team"]
@@ -241,7 +386,6 @@ with tab_player:
                 st.warning(f"⚠️ {player_sel} did not play in {player_team}'s most recent game — may be injured or resting.")
 
         col_left, col_right = st.columns(2)
-
         with col_left:
             st.markdown("**Season Averages**")
             try:
@@ -252,7 +396,7 @@ with tab_player:
 
         with col_right:
             st.markdown("**vs Specific Team**")
-            opponent_sel = st.selectbox("Opponent", ALL_TEAMS, key="pvt_opponent")
+            opponent_sel = st.selectbox("Opponent", NBA_TEAMS, key="pvt_opponent")
             try:
                 pvt_df = player_vs_team(player_sel, opponent_sel, num_games, players_df, games_df)
                 if pvt_df.empty:
@@ -262,23 +406,22 @@ with tab_player:
             except Exception as e:
                 st.warning(str(e))
 
-        # Game log — join with games data to show the opponent
         st.markdown("**Game Log**")
         player_log = players_df[players_df["name"] == player_sel].sort_values("date", ascending=False).head(num_games)
         player_log = player_log.merge(
-            games_df[["id", "home_team", "away_team"]],
-            left_on="game_id", right_on="id", how="left",
+            games_df[["id", "home_team", "away_team"]], left_on="game_id", right_on="id", how="left"
         )
         player_log["opponent"] = player_log.apply(
-            lambda row: row["away_team"] if row["team"] == row["home_team"] else row["home_team"],
-            axis=1,
+            lambda row: row["away_team"] if row["team"] == row["home_team"] else row["home_team"], axis=1
         )
         st.dataframe(
             player_log[["date", "opponent", "points", "assists", "rebounds", "steals", "blocks", "turnovers", "minutes"]],
             use_container_width=True, hide_index=True,
         )
 
-# --- Tab 4: Head-to-Head ---
+# ═════════════════════════════════════════════════════════════════════════════
+# Tab 4: Head-to-Head
+# ═════════════════════════════════════════════════════════════════════════════
 with tab_h2h:
     st.subheader("Head-to-Head")
     col1, col2 = st.columns(2)
@@ -292,14 +435,14 @@ with tab_h2h:
     else:
         h2h_df = head_to_head(h2h_team_a, h2h_team_b, num_games, games_df)
         if h2h_df.empty:
-            st.info(f"No head-to-head data between {h2h_team_a} and {h2h_team_b} in the database. Try scraping more games.")
+            st.info(f"No head-to-head data between {h2h_team_a} and {h2h_team_b} in the database.")
         else:
             a_col = f"{h2h_team_a}_score"
             b_col = f"{h2h_team_b}_score"
             a_wins = (h2h_df["winner"] == h2h_team_a).sum()
             b_wins = (h2h_df["winner"] == h2h_team_b).sum()
+            score_tip = "R" if IS_MLB else "pts"
 
-            # --- W/L Game Strip (last 5 games each team overall) ---
             st.markdown("#### Last 5 Games")
 
             def wl_strip_overall(team, all_games):
@@ -340,24 +483,20 @@ with tab_h2h:
                 st.markdown(wl_strip_overall(h2h_team_b, games_df), unsafe_allow_html=True)
 
             st.markdown("---")
-
-            # --- H2H Summary Stats ---
             st.markdown("#### H2H Summary")
             avg_diff_a = round((h2h_df[a_col] - h2h_df[b_col]).mean(), 1)
             avg_diff_b = round((h2h_df[b_col] - h2h_df[a_col]).mean(), 1)
 
             col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
             col1.metric(f"{h2h_team_a} Wins", int(a_wins))
-            col2.metric("Avg Points", round(h2h_df[a_col].mean(), 1))
+            col2.metric(f"Avg {score_tip}", round(h2h_df[a_col].mean(), 1))
             col3.metric("Avg Margin", f"{'+' if avg_diff_a >= 0 else ''}{avg_diff_a}")
             col4.metric("Avg Total", round((h2h_df[a_col] + h2h_df[b_col]).mean(), 1))
             col5.metric(f"{h2h_team_b} Wins", int(b_wins))
-            col6.metric("Avg Points", round(h2h_df[b_col].mean(), 1))
+            col6.metric(f"Avg {score_tip}", round(h2h_df[b_col].mean(), 1))
             col7.metric("Avg Margin", f"{'+' if avg_diff_b >= 0 else ''}{avg_diff_b}")
 
             st.markdown("---")
-
-            # --- Season Averages Comparison ---
             st.markdown("#### Season Averages")
 
             def season_avg(team, all_games):
@@ -378,13 +517,14 @@ with tab_h2h:
             sb = season_avg(h2h_team_b, games_df)
 
             if sa and sb:
+                scored_stat_label = "Avg Runs Scored" if IS_MLB else "Avg Points Scored"
+                conceded_stat_label = "Avg Runs Allowed" if IS_MLB else "Avg Points Conceded"
                 stats_config = [
-                    ("Avg Points Scored", "avg_scored", True),
-                    ("Avg Points Conceded", "avg_conceded", False),
+                    (scored_stat_label, "avg_scored", True),
+                    (conceded_stat_label, "avg_conceded", False),
                     ("Win %", "win_pct", True),
                     ("Games Played", "games", None),
                 ]
-
                 header_cols = st.columns([2, 1, 1])
                 header_cols[0].markdown("**Stat**")
                 header_cols[1].markdown(f"**{h2h_team_a}**")
@@ -393,7 +533,6 @@ with tab_h2h:
                 for label, key, higher_is_better in stats_config:
                     val_a = sa[key]
                     val_b = sb[key]
-
                     if higher_is_better is None or val_a == val_b:
                         color_a = color_b = "#ffffff00"
                     elif higher_is_better:
@@ -418,11 +557,8 @@ with tab_h2h:
                     )
 
             st.markdown("---")
-
-            # --- Home / Away Breakdown ---
             st.markdown("#### Home & Away Performance (Overall)")
             col1, col2 = st.columns(2)
-
             for col, team in [(col1, h2h_team_a), (col2, h2h_team_b)]:
                 stats = home_away_stats(team, games_df)
                 with col:
@@ -443,54 +579,72 @@ with tab_h2h:
                         st.info("No data available.")
 
             st.markdown("---")
-
-            # --- Full Game Log ---
             st.markdown("#### Full Game Log")
             st.dataframe(h2h_df, use_container_width=True, hide_index=True)
-
             _, center, _ = st.columns([1, 1, 1])
             avg_total = round((h2h_df[a_col] + h2h_df[b_col]).mean(), 1)
-            center.metric("Avg Game Total Points", avg_total)
+            center.metric(f"Avg Game Total {'Runs' if IS_MLB else 'Points'}", avg_total)
 
-# --- Tab 5: Top Performers ---
+# ═════════════════════════════════════════════════════════════════════════════
+# Tab 5: Top Performers
+# ═════════════════════════════════════════════════════════════════════════════
 with tab_top:
     st.subheader("Top Performers")
     top_team = st.selectbox("Select team", ALL_TEAMS, key="top_team")
 
     if players_df.empty:
         st.info("No player data yet. Use the sidebar to scrape some teams first.")
+    elif IS_MLB:
+        bat_col, pitch_col = st.columns(2)
+
+        with bat_col:
+            st.markdown("#### Top Batters")
+            top_bat = mlb_top_batters(top_team, num_games, players_df, games_df)
+            if top_bat.empty:
+                st.info(f"No batter data for {top_team}.")
+            else:
+                chart_data = top_bat.head(10).set_index("player")
+                st.bar_chart(chart_data["HR"])
+                st.dataframe(top_bat, use_container_width=True, hide_index=True)
+
+        with pitch_col:
+            st.markdown("#### Top Pitchers")
+            top_pitch = mlb_top_pitchers(top_team, num_games, players_df, games_df)
+            if top_pitch.empty:
+                st.info(f"No pitcher data for {top_team}.")
+            else:
+                st.dataframe(top_pitch, use_container_width=True, hide_index=True)
     else:
         top_df = top_performers(top_team, num_games, players_df, games_df)
         if top_df.empty:
             st.info(f"No player data for {top_team}. Try scraping this team first.")
         else:
-            # Bar chart of top scorers
             chart_df = top_df.head(10).set_index("player")
             st.bar_chart(chart_df["avg_points"])
-
-            # Full table
             st.dataframe(top_df, use_container_width=True, hide_index=True)
 
-# --- Tab 6: Standings ---
-# Ranks every team in the database by win percentage
+# ═════════════════════════════════════════════════════════════════════════════
+# Tab 6: Standings
+# ═════════════════════════════════════════════════════════════════════════════
 with tab_standings:
     st.subheader("Standings")
     if games_df.empty:
         st.info("No game data yet. Use the sidebar to scrape some teams first.")
     else:
         standings_df = season_standings(games_df)
-        # Highlight the Net Rating column — green if positive, red if negative
+        net_col = "Net Rtg" if not IS_MLB else "Net Rtg"  # "Run Diff" is same column
+
         def color_net(val):
             color = "#2ea44f" if val > 0 else ("#cf222e" if val < 0 else "")
             return f"color: {color}; font-weight: bold" if color else ""
 
         styled = standings_df.style.applymap(color_net, subset=["Net Rtg"])
-        # Height scales with the number of teams so no scrolling is needed
         table_height = (len(standings_df) + 1) * 35 + 3
         st.dataframe(styled, use_container_width=True, hide_index=True, height=table_height)
 
-# --- Tab 7: Predictions ---
-# Estimates who wins a matchup using win%, H2H record, and home/away splits
+# ═════════════════════════════════════════════════════════════════════════════
+# Tab 7: Predictions
+# ═════════════════════════════════════════════════════════════════════════════
 with tab_pred:
     st.subheader("Predictions")
     col1, col2, col3 = st.columns(3)
@@ -510,8 +664,6 @@ with tab_pred:
         st.markdown("---")
         st.markdown("#### Win Probability")
         pc1, pc2 = st.columns(2)
-
-        # Color the favored team green, underdog red
         fav_color_a = "#2ea44f" if prob_a >= prob_b else "#cf222e"
         fav_color_b = "#2ea44f" if prob_b > prob_a else "#cf222e"
         pc1.markdown(
@@ -525,16 +677,16 @@ with tab_pred:
             f'<div style="color:white;">{pred_team_b}</div></div>', unsafe_allow_html=True
         )
 
+        spread_label = "Predicted Run Line" if IS_MLB else "Predicted Spread"
+        spread_unit = "runs" if IS_MLB else "pts"
         st.markdown("---")
-        st.markdown("#### Predicted Spread")
-        # Spread = the average point margin advantage for the favored team
-        # Positive margin = Team A favored, negative = Team B favored
+        st.markdown(f"#### {spread_label}")
         if margin > 0:
-            st.info(f"**{pred_team_a}** favored by **{abs(margin)} pts**")
+            st.info(f"**{pred_team_a}** favored by **{abs(margin)} {spread_unit}**")
         elif margin < 0:
-            st.info(f"**{pred_team_b}** favored by **{abs(margin)} pts**")
+            st.info(f"**{pred_team_b}** favored by **{abs(margin)} {spread_unit}**")
         else:
-            st.info("Pick 'em — no spread advantage detected.")
+            st.info("Pick 'em — no advantage detected.")
 
         st.markdown("---")
         st.markdown("#### Team Context")
@@ -551,10 +703,13 @@ with tab_pred:
                 ctx_col.markdown(f"Season: **{wins}W–{len(tg)-wins}L** ({wp}%)")
                 ctx_col.markdown(f"Streak: **{st_type}{sc}**")
 
-# --- Tab 8: AI Scout ---
+# ═════════════════════════════════════════════════════════════════════════════
+# Tab 8: AI Scout
+# ═════════════════════════════════════════════════════════════════════════════
 with tab_ai:
     st.subheader("AI Scout")
-    st.caption("Ask anything about the teams and players in your database.")
+    sport_label = "MLB" if IS_MLB else "NBA"
+    st.caption(f"Ask anything about the {sport_label} teams and players in your database.")
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
 
@@ -562,21 +717,21 @@ with tab_ai:
         st.warning("Set your `ANTHROPIC_API_KEY` environment variable to use AI Scout.")
         st.code("export ANTHROPIC_API_KEY='sk-ant-...'", language="bash")
     else:
-        if "ai_messages" not in st.session_state:
-            st.session_state.ai_messages = []
+        ai_key = f"{'mlb' if IS_MLB else 'nba'}_ai_messages"
+        if ai_key not in st.session_state:
+            st.session_state[ai_key] = []
 
-        # Render chat history
-        for msg in st.session_state.ai_messages:
+        for msg in st.session_state[ai_key]:
             with st.chat_message(msg["role"]):
                 st.write(msg["content"])
 
-        if prompt := st.chat_input("Ask about teams, players, or matchups..."):
-            st.session_state.ai_messages.append({"role": "user", "content": prompt})
+        if prompt := st.chat_input(f"Ask about {sport_label} teams, players, or matchups..."):
+            st.session_state[ai_key].append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.write(prompt)
 
-            # Build context from the database
             context_parts = []
+
             if not games_df.empty:
                 recent = games_df.sort_values("date", ascending=False).head(30)
                 context_parts.append(
@@ -587,33 +742,62 @@ with tab_ai:
                 context_parts.append("Standings:\n" + standings.to_string(index=False))
 
             if not players_df.empty:
-                top_scorers = (
-                    players_df.groupby("name")
-                    .agg(avg_pts=("points", "mean"), avg_reb=("rebounds", "mean"), avg_ast=("assists", "mean"), games=("game_id", "count"))
-                    .sort_values("avg_pts", ascending=False)
-                    .head(30)
-                    .round(1)
-                )
-                context_parts.append("Top scorers:\n" + top_scorers.to_string())
+                if IS_MLB:
+                    batters = players_df[players_df["role"] == "batter"]
+                    top_bat = (
+                        batters.groupby("name")
+                        .agg(HR=("home_runs", "sum"), RBI=("rbi", "sum"),
+                             H=("hits", "sum"), AB=("at_bats", "sum"))
+                        .reset_index()
+                    )
+                    top_bat["AVG"] = top_bat.apply(
+                        lambda r: round(r["H"] / r["AB"], 3) if r["AB"] > 0 else 0.0, axis=1
+                    )
+                    top_bat = top_bat.sort_values("HR", ascending=False).head(20).round(3)
+                    context_parts.append("Top batters (by HR):\n" + top_bat.to_string(index=False))
+
+                    pitchers = players_df[players_df["role"] == "pitcher"]
+                    top_pitch = (
+                        pitchers.groupby("name")
+                        .agg(IP=("innings_pitched", "sum"), ER=("earned_runs", "sum"),
+                             SO=("strikeouts_pitched", "sum"), BB=("walks_allowed", "sum"))
+                        .reset_index()
+                    )
+                    top_pitch["ERA"] = top_pitch.apply(
+                        lambda r: round(r["ER"] / r["IP"] * 9, 2) if r["IP"] > 0 else 0.0, axis=1
+                    )
+                    top_pitch = top_pitch[top_pitch["IP"] >= 5].sort_values("ERA").head(20)
+                    context_parts.append("Top pitchers (by ERA):\n" + top_pitch.to_string(index=False))
+                else:
+                    top_scorers = (
+                        players_df.groupby("name")
+                        .agg(avg_pts=("points", "mean"), avg_reb=("rebounds", "mean"),
+                             avg_ast=("assists", "mean"), games=("game_id", "count"))
+                        .sort_values("avg_pts", ascending=False)
+                        .head(30)
+                        .round(1)
+                    )
+                    context_parts.append("Top scorers:\n" + top_scorers.to_string())
 
             context = "\n\n".join(context_parts) if context_parts else "No data in the database yet."
-
             full_prompt = f"Database stats:\n{context}\n\nQuestion: {prompt}"
+
+            system_prompt = (
+                f"You are AI Scout, an expert {sport_label} analyst. Answer questions using only the stats "
+                f"data provided. Be concise and insightful. If something isn't in the data, say so."
+            )
 
             with st.chat_message("assistant"):
                 client = anthropic.Anthropic(api_key=api_key)
                 with client.messages.stream(
                     model="claude-opus-4-6",
                     max_tokens=1024,
-                    system=(
-                        "You are AI Scout, an expert NBA analyst. Answer questions using only the stats "
-                        "data provided. Be concise and insightful. If something isn't in the data, say so."
-                    ),
+                    system=system_prompt,
                     messages=[{"role": "user", "content": full_prompt}],
                 ) as stream:
                     response_text = st.write_stream(stream.text_stream)
 
-            st.session_state.ai_messages.append({"role": "assistant", "content": response_text})
+            st.session_state[ai_key].append({"role": "assistant", "content": response_text})
 
-# Close connection
+# ── Close DB ──────────────────────────────────────────────────────────────────
 conn.close()
