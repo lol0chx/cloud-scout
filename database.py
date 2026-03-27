@@ -144,6 +144,7 @@ def load_games(conn, team=None, league="NBA"):
     Load games from the database into a pandas DataFrame.
     Optionally filter by team name (matches either home or away team)
     and by league. Results are ordered by date descending (most recent first).
+    Excludes corrupt 0-0 records automatically.
 
     Args:
         conn: SQLite connection object
@@ -153,7 +154,8 @@ def load_games(conn, team=None, league="NBA"):
     Returns:
         pandas DataFrame of matching game records
     """
-    query = "SELECT * FROM games WHERE league = ?"
+    # Exclude games where both scores are 0 — these are corrupt/incomplete records
+    query = "SELECT * FROM games WHERE league = ? AND NOT (home_score = 0 AND away_score = 0)"
     params = [league]
 
     # Filter for games involving the specified team on either side
