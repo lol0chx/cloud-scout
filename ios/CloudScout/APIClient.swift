@@ -98,6 +98,26 @@ struct API {
         return arr.map { row in row.mapValues { "\($0)" } }
     }
 
+    static func h2h(league: Sport, teamA: String, teamB: String, n: Int = 10) async throws -> H2HResponse {
+        try await get("/team/h2h?league=\(league.rawValue)&team_a=\(enc(teamA))&team_b=\(enc(teamB))&n=\(n)")
+    }
+
+    static func homeAway(league: Sport, team: String) async throws -> HomeAwayStats {
+        try await get("/team/home-away?league=\(league.rawValue)&team=\(enc(team))")
+    }
+
+    static func topPerformers(league: Sport, team: String, n: Int = 15) async throws -> TopPerformersResponse {
+        try await get("/team/top-performers?league=\(league.rawValue)&team=\(enc(team))&n=\(n)")
+    }
+
+    static func playerVsTeam(league: Sport, name: String, opponent: String, n: Int = 15, role: String = "batter") async throws -> [(String, String)] {
+        let url = URL(string: API_BASE + "/player/vs-team?league=\(league.rawValue)&name=\(enc(name))&opponent=\(enc(opponent))&n=\(n)&role=\(enc(role))")!
+        let (data, _) = try await URLSession.shared.data(from: url)
+        guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        let skip = Set(["player", "games", "opponent"])
+        return dict.filter { !skip.contains($0.key) }.sorted { $0.key < $1.key }.map { ($0.key, "\($0.value)") }
+    }
+
     struct ScrapeRequest: Encodable {
         let league: String
         let team: String
