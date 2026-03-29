@@ -30,7 +30,7 @@ struct StandingsView: View {
                             Text("W").frame(width: 36, alignment: .center)
                             Text("L").frame(width: 36, alignment: .center)
                             Text("Win%").frame(width: 48, alignment: .center)
-                            Text("Net").frame(width: 44, alignment: .center)
+                            Text("Net").frame(width: 54, alignment: .center)
                             Text("Str").frame(width: 36, alignment: .center)
                         }
                         .font(.system(size: 12, weight: .semibold))
@@ -87,7 +87,7 @@ private struct StandingRow: View {
             Text(String(format: "%+.1f", standing.netRtg))
                 .font(.system(size: 13, weight: .bold))
                 .foregroundColor(standing.netRtg > 0 ? .appWin : standing.netRtg < 0 ? .appLoss : .white)
-                .frame(width: 44, alignment: .center)
+                .frame(width: 54, alignment: .center)
             Text(standing.Streak)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(standing.Streak.hasPrefix("W") ? .appWin : .appLoss)
