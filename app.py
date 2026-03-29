@@ -433,6 +433,38 @@ with tab_pred:
     elif h2h_team_a == h2h_team_b:
         st.warning("Please select two different teams.")
     else:
+        # ── Season Record ─────────────────────────────────────────────────────
+        def team_season_record(team, all_games):
+            tg = all_games[(all_games["home_team"] == team) | (all_games["away_team"] == team)]
+            if tg.empty:
+                return None
+            scored = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
+            conceded = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
+            wins = int((scored.values > conceded.values).sum())
+            losses = len(tg) - wins
+            streak_count, streak_type = win_streak(team, all_games)
+            return {"wins": wins, "losses": losses, "win_pct": round(wins / len(tg) * 100, 1),
+                    "streak": f"{streak_type}{streak_count}", "streak_type": streak_type}
+
+        st.markdown("#### Season Record")
+        rec_col1, rec_col2 = st.columns(2)
+        for rec_col, team in [(rec_col1, h2h_team_a), (rec_col2, h2h_team_b)]:
+            rec = team_season_record(team, games_df)
+            with rec_col:
+                if rec:
+                    streak_color = "#2ea44f" if rec["streak_type"] == "W" else "#cf222e"
+                    st.markdown(
+                        f'<div style="background:#1c1c2e;border-radius:10px;padding:14px;">'
+                        f'<div style="font-weight:700;font-size:15px;margin-bottom:8px;">{team}</div>'
+                        f'<div style="font-size:13px;color:#8a8a9a;">{rec["wins"]}W – {rec["losses"]}L</div>'
+                        f'<div style="font-size:13px;color:#8a8a9a;">{rec["win_pct"]}% win</div>'
+                        f'<div style="font-size:13px;color:{streak_color};font-weight:600;">{rec["streak"]} streak</div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+        st.markdown("---")
+
         h2h_df = head_to_head(h2h_team_a, h2h_team_b, num_games, games_df)
         if h2h_df.empty:
             st.info(f"No head-to-head data between {h2h_team_a} and {h2h_team_b} in the database.")
@@ -443,7 +475,7 @@ with tab_pred:
             b_wins = (h2h_df["winner"] == h2h_team_b).sum()
             score_tip = "R" if IS_MLB else "pts"
 
-            st.markdown("#### Last 5 Games")
+            st.markdown("#### Recent Form (Last 5)")
 
             def wl_strip_overall(team, all_games):
                 team_games = all_games[
