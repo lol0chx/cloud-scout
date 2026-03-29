@@ -4,3 +4,15 @@ __pycache__/
 *.pyc
 *.db
 .idea/
+
+# Mobile (React Native / Expo)
+mobile/node_modules/
+mobile/.expo/
+mobile/package-lock.json
+
+# iOS (Xcode)
+ios/.DS_Store
+ios/*.xcodeproj/project.xcworkspace/
+ios/*.xcodeproj/xcuserdata/
+ios/DerivedData/
+ios/*.xcworkspace/
