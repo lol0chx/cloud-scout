@@ -1,5 +1,39 @@
 CloudScout — Available Commands
 ================================
+
+iOS APP (Swift/Xcode):
+================================
+  Run ALL of these from: /Users/lol/Documents/Repos/cloud-scout
+
+  FIRST TIME SETUP (only once):
+       cd /Users/lol/Documents/Repos/cloud-scout
+       python3 -m venv venv
+       venv/bin/pip install -r requirements.txt
+       brew install ngrok
+       ngrok config add-authtoken YOUR_NGROK_TOKEN
+
+  EVERY TIME YOU WANT TO USE THE APP (3 terminal tabs):
+
+  Tab 1 — Start the backend:
+       cd /Users/lol/Documents/Repos/cloud-scout
+       venv/bin/uvicorn api:app --reload
+
+  Tab 2 — Start ngrok tunnel (so app works without WiFi):
+       ngrok http 8000
+       → Copy the https://xxxx.ngrok-free.app URL
+       → Paste it into ios/CloudScout/APIClient.swift as API_BASE
+       → Rebuild in Xcode (Cmd+R)
+
+  Tab 3 — Open Xcode:
+       cd /Users/lol/Documents/Repos/cloud-scout
+       open ios/CloudScout.xcodeproj
+       → Select your iPhone or a simulator at the top
+       → Press Cmd+R to build and run
+
+  Note: ngrok URL changes every time you restart it (free plan).
+        Update API_BASE in ios/CloudScout/APIClient.swift each time.
+  Note: Current ngrok URL: https://archangelical-airily-bradley.ngrok-free.dev
+
 python3 -m streamlit run app.py
 
 TEAM STATS (recent form, averages, rolling performance):

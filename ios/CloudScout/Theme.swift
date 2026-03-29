@@ -1,0 +1,21 @@
+import SwiftUI
+
+extension Color {
+    static let appBg      = Color(hex: "0d0d0d")
+    static let appCard    = Color(hex: "1c1c2e")
+    static let appBorder  = Color(hex: "2a2a3e")
+    static let appPrimary = Color(hex: "5b8ff7")
+    static let appWin     = Color(hex: "2ea44f")
+    static let appLoss    = Color(hex: "cf222e")
+    static let appSub     = Color(hex: "8a8a9a")
+    static let appMLB     = Color(hex: "d4b86a")
+
+    init(hex: String) {
+        var int: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&int)
+        let r = Double((int >> 16) & 0xFF) / 255
+        let g = Double((int >> 8)  & 0xFF) / 255
+        let b = Double( int        & 0xFF) / 255
+        self.init(.sRGB, red: r, green: g, blue: b, opacity: 1)
+    }
+}
