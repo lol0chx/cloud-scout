@@ -286,21 +286,43 @@ private struct StatBox: View {
 
 private struct H2HGameLog: View {
     let games: [[String: AnyCodable]]; let teamA: String; let teamB: String
+
+    private func toGame(_ g: [String: AnyCodable]) -> Game? {
+        guard let id = g["id"]?.value as? Int,
+              let date = g["date"]?.stringValue,
+              let league = g["league"]?.stringValue,
+              let season = g["season"]?.stringValue else { return nil }
+        let aScore = Int(g["\(teamA)_score"]?.stringValue.split(separator: ".").first ?? "0") ?? 0
+        let bScore = Int(g["\(teamB)_score"]?.stringValue.split(separator: ".").first ?? "0") ?? 0
+        let homeIsA = g["home_team"]?.stringValue == teamA
+        return Game(id: id, date: date,
+                    home_team: homeIsA ? teamA : teamB,
+                    away_team: homeIsA ? teamB : teamA,
+                    home_score: homeIsA ? aScore : bScore,
+                    away_score: homeIsA ? bScore : aScore,
+                    league: league, season: season)
+    }
+
     var body: some View {
         VStack(spacing: 6) {
             ForEach(Array(games.enumerated()), id: \.offset) { _, g in
-                let aScore = g["\(teamA)_score"]?.stringValue ?? "?"
-                let bScore = g["\(teamB)_score"]?.stringValue ?? "?"
+                let aScore = g["\(teamA)_score"]?.stringValue.split(separator: ".").first.map(String.init) ?? "?"
+                let bScore = g["\(teamB)_score"]?.stringValue.split(separator: ".").first.map(String.init) ?? "?"
                 let date = g["date"]?.stringValue ?? ""
                 let winner = g["winner"]?.stringValue ?? ""
-                HStack {
-                    Text(date).font(.system(size: 11)).foregroundColor(.appSub).frame(width: 80, alignment: .leading)
-                    Spacer()
+                let row = HStack(spacing: 4) {
+                    Text(date).font(.system(size: 11)).foregroundColor(.appSub).frame(width: 76, alignment: .leading)
                     Text(teamA).font(.system(size: 12)).foregroundColor(winner == teamA ? .white : .appSub).lineLimit(1).frame(maxWidth: .infinity, alignment: .trailing)
-                    Text("\(aScore) – \(bScore)").font(.system(size: 14, weight: .bold)).foregroundColor(.white).padding(.horizontal, 8)
+                    Text("\(aScore)–\(bScore)").font(.system(size: 14, weight: .bold)).foregroundColor(.white).fixedSize().padding(.horizontal, 6)
                     Text(teamB).font(.system(size: 12)).foregroundColor(winner == teamB ? .white : .appSub).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(10).background(Color.appCard).clipShape(RoundedRectangle(cornerRadius: 8))
+
+                if let game = toGame(g) {
+                    NavigationLink(destination: GameDetailView(game: game)) { row }
+                } else {
+                    row
+                }
             }
         }
     }
