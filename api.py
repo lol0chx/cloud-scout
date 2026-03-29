@@ -93,6 +93,9 @@ def get_standings(league: str = "NBA"):
         df = load_games(conn, league=league.upper())
         if df.empty:
             return []
+        # Always use only the most recent season's games
+        latest_season = df["season"].max()
+        df = df[df["season"] == latest_season]
         return _to_json(season_standings(df))
     finally:
         conn.close()
