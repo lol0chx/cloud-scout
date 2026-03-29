@@ -9,12 +9,12 @@ struct ContentView: View {
                 .tabItem { Label("Standings", systemImage: "list.number") }
             PredictView()
                 .tabItem { Label("Predict", systemImage: "chart.bar") }
-            FormView()
-                .tabItem { Label("Form", systemImage: "chart.line.uptrend.xyaxis") }
             PlayersView()
                 .tabItem { Label("Players", systemImage: "person.2") }
             AIView()
                 .tabItem { Label("AI Scout", systemImage: "brain") }
+            FormView()
+                .tabItem { Label("Form", systemImage: "chart.line.uptrend.xyaxis") }
             UpdateView()
                 .tabItem { Label("Update", systemImage: "arrow.down.circle") }
         }
