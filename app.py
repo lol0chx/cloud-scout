@@ -181,9 +181,9 @@ if st.sidebar.button("Update All Teams", type="primary"):
     players_df = load_mlb_players(conn) if IS_MLB else load_players(conn)
 
 # ── Main tabs ─────────────────────────────────────────────────────────────────
-tab_games, tab_team, tab_player, tab_h2h, tab_top, tab_standings, tab_pred, tab_ai = st.tabs(
-    ["Game Results", "Team Form", "Player Stats", "Head-to-Head",
-     "Top Performers", "Standings", "Predictions", "AI Scout"]
+tab_games, tab_team, tab_player, tab_pred, tab_top, tab_standings, tab_ai = st.tabs(
+    ["Game Results", "Team Form", "Player Stats", "Predictions",
+     "Top Performers", "Standings", "AI Scout"]
 )
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -420,10 +420,10 @@ with tab_player:
         )
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Tab 4: Head-to-Head
+# Tab 4: Predictions (win probability + H2H)
 # ═════════════════════════════════════════════════════════════════════════════
-with tab_h2h:
-    st.subheader("Head-to-Head")
+with tab_pred:
+    st.subheader("Predictions")
     col1, col2 = st.columns(2)
     h2h_team_a = col1.selectbox("Team A", ALL_TEAMS, index=0, key="h2h_a")
     h2h_team_b = col2.selectbox("Team B", ALL_TEAMS, index=1, key="h2h_b")
@@ -585,6 +585,41 @@ with tab_h2h:
             avg_total = round((h2h_df[a_col] + h2h_df[b_col]).mean(), 1)
             center.metric(f"Avg Game Total {'Runs' if IS_MLB else 'Points'}", avg_total)
 
+    # ── Win Probability ───────────────────────────────────────────────────────
+    if not games_df.empty and h2h_team_a != h2h_team_b:
+        st.markdown("---")
+        st.markdown("#### Win Probability")
+        col1, col2, col3 = st.columns(3)
+        home_options = ["Neutral", h2h_team_a, h2h_team_b]
+        pred_home = col3.selectbox("Home team", home_options, key="pred_home")
+        home_team_val = None if pred_home == "Neutral" else pred_home
+        prob_a, prob_b, margin = win_probability(h2h_team_a, h2h_team_b, games_df, home_team=home_team_val)
+
+        pc1, pc2 = st.columns(2)
+        fav_color_a = "#2ea44f" if prob_a >= prob_b else "#cf222e"
+        fav_color_b = "#2ea44f" if prob_b > prob_a else "#cf222e"
+        pc1.markdown(
+            f'<div style="background:{fav_color_a};padding:16px;border-radius:8px;text-align:center;">'
+            f'<div style="font-size:2rem;font-weight:bold;color:white;">{prob_a}%</div>'
+            f'<div style="color:white;">{h2h_team_a}</div></div>', unsafe_allow_html=True
+        )
+        pc2.markdown(
+            f'<div style="background:{fav_color_b};padding:16px;border-radius:8px;text-align:center;">'
+            f'<div style="font-size:2rem;font-weight:bold;color:white;">{prob_b}%</div>'
+            f'<div style="color:white;">{h2h_team_b}</div></div>', unsafe_allow_html=True
+        )
+
+        spread_label = "Predicted Run Line" if IS_MLB else "Predicted Spread"
+        spread_unit = "runs" if IS_MLB else "pts"
+        st.markdown("---")
+        st.markdown(f"#### {spread_label}")
+        if margin > 0:
+            st.info(f"**{h2h_team_a}** favored by **{abs(margin)} {spread_unit}**")
+        elif margin < 0:
+            st.info(f"**{h2h_team_b}** favored by **{abs(margin)} {spread_unit}**")
+        else:
+            st.info("Pick 'em — no advantage detected.")
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Tab 5: Top Performers
 # ═════════════════════════════════════════════════════════════════════════════
@@ -643,68 +678,7 @@ with tab_standings:
         st.dataframe(styled, use_container_width=True, hide_index=True, height=table_height)
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Tab 7: Predictions
-# ═════════════════════════════════════════════════════════════════════════════
-with tab_pred:
-    st.subheader("Predictions")
-    col1, col2, col3 = st.columns(3)
-    pred_team_a = col1.selectbox("Team A", ALL_TEAMS, index=0, key="pred_a")
-    pred_team_b = col2.selectbox("Team B", ALL_TEAMS, index=1, key="pred_b")
-    home_options = ["Neutral", pred_team_a, pred_team_b]
-    pred_home = col3.selectbox("Home team", home_options, key="pred_home")
-
-    if games_df.empty:
-        st.info("No game data yet. Use the sidebar to scrape some teams first.")
-    elif pred_team_a == pred_team_b:
-        st.warning("Please select two different teams.")
-    else:
-        home_team_val = None if pred_home == "Neutral" else pred_home
-        prob_a, prob_b, margin = win_probability(pred_team_a, pred_team_b, games_df, home_team=home_team_val)
-
-        st.markdown("---")
-        st.markdown("#### Win Probability")
-        pc1, pc2 = st.columns(2)
-        fav_color_a = "#2ea44f" if prob_a >= prob_b else "#cf222e"
-        fav_color_b = "#2ea44f" if prob_b > prob_a else "#cf222e"
-        pc1.markdown(
-            f'<div style="background:{fav_color_a};padding:16px;border-radius:8px;text-align:center;">'
-            f'<div style="font-size:2rem;font-weight:bold;color:white;">{prob_a}%</div>'
-            f'<div style="color:white;">{pred_team_a}</div></div>', unsafe_allow_html=True
-        )
-        pc2.markdown(
-            f'<div style="background:{fav_color_b};padding:16px;border-radius:8px;text-align:center;">'
-            f'<div style="font-size:2rem;font-weight:bold;color:white;">{prob_b}%</div>'
-            f'<div style="color:white;">{pred_team_b}</div></div>', unsafe_allow_html=True
-        )
-
-        spread_label = "Predicted Run Line" if IS_MLB else "Predicted Spread"
-        spread_unit = "runs" if IS_MLB else "pts"
-        st.markdown("---")
-        st.markdown(f"#### {spread_label}")
-        if margin > 0:
-            st.info(f"**{pred_team_a}** favored by **{abs(margin)} {spread_unit}**")
-        elif margin < 0:
-            st.info(f"**{pred_team_b}** favored by **{abs(margin)} {spread_unit}**")
-        else:
-            st.info("Pick 'em — no advantage detected.")
-
-        st.markdown("---")
-        st.markdown("#### Team Context")
-        ctx_col1, ctx_col2 = st.columns(2)
-        for ctx_col, team in [(ctx_col1, pred_team_a), (ctx_col2, pred_team_b)]:
-            sc, st_type = win_streak(team, games_df)
-            tg = games_df[(games_df["home_team"] == team) | (games_df["away_team"] == team)]
-            if not tg.empty:
-                s = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
-                c = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
-                wins = int((s.values > c.values).sum())
-                wp = round(wins / len(tg) * 100, 1)
-                ctx_col.markdown(f"**{team}**")
-                ctx_col.markdown(f"Season: **{wins}W–{len(tg)-wins}L** ({wp}%)")
-                ctx_col.markdown(f"Streak: **{st_type}{sc}**")
-
-# ═════════════════════════════════════════════════════════════════════════════
-# Tab 8: AI Scout
+# Tab 7: AI Scout
 # ═════════════════════════════════════════════════════════════════════════════
 with tab_ai:
     st.subheader("AI Scout")
