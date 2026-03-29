@@ -56,7 +56,7 @@ struct FormView: View {
                             .padding(.top, 8)
                             .padding(.bottom, 8)
 
-                        ForEach(f.form_log) { g in
+                        ForEach(f.form_log.sorted { $0.date > $1.date }) { g in
                             FormGameRow(game: g)
                         }
                     }

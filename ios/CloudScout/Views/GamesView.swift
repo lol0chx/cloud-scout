@@ -70,7 +70,7 @@ struct GamesView: View {
     private func load() async {
         loading = true
         error = ""
-        do { games = try await API.games(league: state.sport, team: team) }
+        do { games = try await API.games(league: state.sport, team: team).sorted { $0.date > $1.date } }
         catch let e { error = e.localizedDescription }
         loading = false
     }
