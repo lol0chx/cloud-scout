@@ -15,18 +15,21 @@ from nba_api.stats.static import teams as nba_teams
 from pydantic import BaseModel
 
 from analytics import (
+    advanced_team_stats,
     head_to_head,
+    h2h_pace,
     home_away_stats,
     last_n_avg,
     player_avg,
     player_vs_team,
+    projected_total,
     rolling_form,
     season_standings,
     top_performers,
     win_probability,
     win_streak,
 )
-from database import init_db, load_games, load_mlb_players, load_players
+from database import init_db, load_games, load_mlb_players, load_players, load_injuries
 from mlb_analytics import (
     mlb_batter_avg,
     mlb_batter_vs_team,
@@ -36,7 +39,7 @@ from mlb_analytics import (
 )
 from mlb_scraper import DEFAULT_SEASON as MLB_DEFAULT_SEASON
 from mlb_scraper import get_all_mlb_teams, scrape_mlb_team
-from scraper import scrape_team
+from scraper import scrape_team, scrape_injuries, fetch_todays_games, fetch_starters
 
 app = FastAPI(title="CloudScout API", version="1.0.0")
 
@@ -164,6 +167,87 @@ def get_home_away(team: str, league: str = "NBA"):
         if stats is None:
             raise HTTPException(404, f"No data for {team}")
         return stats
+    finally:
+        conn.close()
+
+
+# ── Advanced Stats ────────────────────────────────────────────────────────────
+
+@app.get("/team/advanced")
+def get_advanced_stats(team: str, league: str = "NBA", n: int = 10):
+    """
+    Return advanced team analytics for the last N games:
+    pace, offensive/defensive rating, net rating, eFG%, TS%,
+    3PAr, FTr, TOV%, OREB%, DREB%, FG%/3P%/FT%, and rest days.
+    """
+    if league.upper() != "NBA":
+        raise HTTPException(400, "Advanced stats only available for NBA")
+    conn = _conn()
+    try:
+        games_df = load_games(conn, league="NBA")
+        players_df = load_players(conn)
+        if games_df.empty:
+            raise HTTPException(404, "No games in database")
+        stats = advanced_team_stats(team, games_df, players_df, n)
+        return stats
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    finally:
+        conn.close()
+
+
+@app.get("/team/advanced/h2h")
+def get_h2h_advanced(team_a: str, team_b: str, league: str = "NBA", n: int = 10):
+    """
+    Return advanced stats for both teams side-by-side plus H2H pace.
+    Used by the Predict tab to show a full analytical breakdown.
+    """
+    if league.upper() != "NBA":
+        raise HTTPException(400, "Advanced stats only available for NBA")
+    conn = _conn()
+    try:
+        games_df = load_games(conn, league="NBA")
+        players_df = load_players(conn)
+        if games_df.empty:
+            raise HTTPException(404, "No games in database")
+        stats_a = advanced_team_stats(team_a, games_df, players_df, n)
+        stats_b = advanced_team_stats(team_b, games_df, players_df, n)
+        pace = h2h_pace(team_a, team_b, games_df, players_df, n)
+        return {
+            "team_a": stats_a,
+            "team_b": stats_b,
+            "h2h_pace": pace,
+        }
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    finally:
+        conn.close()
+
+
+# ── Over/Under Projected Total ────────────────────────────────────────────────
+
+@app.get("/predict/total")
+def get_projected_total(team_a: str, team_b: str, home: str = "", n: int = 10):
+    """
+    8-step projected over/under total with full step-by-step breakdown.
+    Includes injury adjustment when injury data is available.
+    """
+    conn = _conn()
+    try:
+        games_df = load_games(conn, league="NBA")
+        players_df = load_players(conn)
+        injuries_df = load_injuries(conn, league="NBA")
+        if games_df.empty:
+            raise HTTPException(404, "No games in database")
+        home_team = home if home in [team_a, team_b] else None
+        result = projected_total(team_a, team_b, games_df, players_df,
+                                  home_team=home_team, n=n,
+                                  injuries_df=injuries_df)
+        if "error" in result:
+            raise HTTPException(404, result["error"])
+        return result
+    except ValueError as e:
+        raise HTTPException(404, str(e))
     finally:
         conn.close()
 
@@ -309,6 +393,43 @@ def scrape(req: ScrapeRequest):
         return {"games_added": len(g), "players_added": len(p)}
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+# ── Injuries ─────────────────────────────────────────────────────────────────
+
+@app.post("/injuries/refresh")
+def refresh_injuries(league: str = "NBA"):
+    """Fetch latest injury report from ESPN and save to database."""
+    result = scrape_injuries(league.upper())
+    return {"injuries_updated": len(result)}
+
+
+@app.get("/injuries")
+def get_injuries(league: str = "NBA", team: str = ""):
+    """Get current injury report, optionally filtered by team."""
+    conn = _conn()
+    try:
+        df = load_injuries(conn, team=team or None, league=league.upper())
+        return _to_json(df)
+    finally:
+        conn.close()
+
+
+# ── Today's Games & Starters ────────────────────────────────────────────────
+
+@app.get("/games/today")
+def get_todays_games():
+    """Get today's NBA scoreboard (scheduled, live, completed)."""
+    return fetch_todays_games()
+
+
+@app.get("/games/starters/{game_id}")
+def get_game_starters(game_id: str):
+    """Get confirmed starters for a live or completed NBA game."""
+    result = fetch_starters(game_id)
+    if not result.get("home") and not result.get("away"):
+        raise HTTPException(404, "Starters not yet available — game may not have started")
+    return result
 
 
 # ── AI Chat ───────────────────────────────────────────────────────────────────

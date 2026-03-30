@@ -106,6 +106,14 @@ struct API {
         try await get("/team/home-away?league=\(league.rawValue)&team=\(enc(team))")
     }
 
+    static func advancedH2H(teamA: String, teamB: String, n: Int = 10) async throws -> H2HAdvancedResponse {
+        try await get("/team/advanced/h2h?team_a=\(enc(teamA))&team_b=\(enc(teamB))&n=\(n)")
+    }
+
+    static func projectedTotal(teamA: String, teamB: String, home: String = "", n: Int = 10) async throws -> ProjectedTotalResponse {
+        try await get("/predict/total?team_a=\(enc(teamA))&team_b=\(enc(teamB))&home=\(enc(home))&n=\(n)")
+    }
+
     static func topPerformers(league: Sport, team: String, n: Int = 15) async throws -> TopPerformersResponse {
         try await get("/team/top-performers?league=\(league.rawValue)&team=\(enc(team))&n=\(n)")
     }
@@ -128,6 +136,28 @@ struct API {
         let games_added: Int
         let players_added: Int
     }
+
+    // ── Injuries ─────────────────────────────────────────────────────────
+
+    static func injuries(league: Sport, team: String = "") async throws -> [Injury] {
+        try await get("/injuries?league=\(league.rawValue)&team=\(enc(team))")
+    }
+
+    static func refreshInjuries(league: Sport) async throws -> RefreshResponse {
+        try await post("/injuries/refresh?league=\(league.rawValue)", body: ["league": league.rawValue])
+    }
+
+    // ── Today's Games & Starters ────────────────────────────────────────
+
+    static func todaysGames() async throws -> [TodayGame] {
+        try await get("/games/today")
+    }
+
+    static func starters(gameId: String) async throws -> StartersResponse {
+        try await get("/games/starters/\(gameId)")
+    }
+
+    // ── Scrape ──────────────────────────────────────────────────────────
 
     static func scrapeTeam(league: Sport, team: String, last: Int = 15, season: Int = 2025) async throws -> ScrapeResponse {
         let req = ScrapeRequest(league: league.rawValue, team: team, last: last, season: season)

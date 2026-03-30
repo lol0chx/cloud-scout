@@ -7,6 +7,8 @@ struct UpdateView: View {
     @State private var gamesCount = 15
     @State private var scraping = false
     @State private var scrapingAll = false
+    @State private var refreshingInjuries = false
+    @State private var injuryCount: Int?
     @State private var results: [ScrapeResult] = []
     @State private var error = ""
 
@@ -35,7 +37,7 @@ struct UpdateView: View {
                         Slider(value: Binding(
                             get: { Double(gamesCount) },
                             set: { gamesCount = Int($0) }
-                        ), in: 5...50, step: 5)
+                        ), in: 5...82, step: 1)
                         .tint(.appPrimary)
                     }
                     .padding(.bottom, 16)
@@ -112,6 +114,41 @@ struct UpdateView: View {
                     }
                     .padding(.bottom, 20)
 
+                    // Refresh injury report
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("INJURY REPORT")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.appSub)
+                            .kerning(0.8)
+
+                        Button {
+                            Task { await refreshInjuries() }
+                        } label: {
+                            HStack {
+                                if refreshingInjuries {
+                                    ProgressView().tint(.white).scaleEffect(0.8)
+                                    Text("Fetching injuries...").foregroundColor(.white)
+                                } else {
+                                    Image(systemName: "cross.case.fill")
+                                    Text("Refresh Injury Report")
+                                }
+                            }
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(refreshingInjuries ? Color.appBorder : Color.appLoss.opacity(0.8))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                        }
+                        .disabled(refreshingInjuries)
+
+                        if let count = injuryCount {
+                            Text("\(count) players on injury report")
+                                .font(.system(size: 12)).foregroundColor(.appSub)
+                        }
+                    }
+                    .padding(.bottom, 20)
+
                     if !error.isEmpty {
                         Text(error)
                             .foregroundColor(.appLoss)
@@ -175,6 +212,17 @@ struct UpdateView: View {
             error = e.localizedDescription
         }
         scraping = false
+    }
+
+    private func refreshInjuries() async {
+        refreshingInjuries = true; error = ""
+        do {
+            let res = try await API.refreshInjuries(league: state.sport)
+            injuryCount = res.injuries_updated
+        } catch let e {
+            error = e.localizedDescription
+        }
+        refreshingInjuries = false
     }
 
     private func scrapeAll() async {

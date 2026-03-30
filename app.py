@@ -12,8 +12,8 @@ import streamlit as st
 import pandas as pd
 from nba_api.stats.static import teams as nba_teams
 
-from database import init_db, load_games, load_players, load_mlb_players
-from scraper import scrape_team
+from database import init_db, load_games, load_players, load_mlb_players, load_injuries
+from scraper import scrape_team, scrape_injuries, fetch_todays_games, fetch_starters
 from mlb_scraper import scrape_mlb_team, get_all_mlb_teams, DEFAULT_SEASON as MLB_DEFAULT_SEASON
 from analytics import (
     last_n_avg,
@@ -27,6 +27,7 @@ from analytics import (
     season_standings,
     win_probability,
     possible_injured_players,
+    projected_total,
 )
 from mlb_analytics import (
     mlb_batter_avg,
@@ -89,7 +90,7 @@ st.sidebar.divider()
 # ── Sidebar: Scrape Data ──────────────────────────────────────────────────────
 st.sidebar.header("Scrape Data")
 scrape_team_name = st.sidebar.selectbox("Team to scrape", ALL_TEAMS, key="scrape_team")
-scrape_count = st.sidebar.slider("Games to scrape", 5, 50, 15, key="scrape_count")
+scrape_count = st.sidebar.slider("Games to scrape", 5, 82, 15, key="scrape_count")
 
 if st.sidebar.button("Scrape Team"):
     with st.sidebar.status(f"Scraping {scrape_team_name}...", expanded=True):
@@ -122,6 +123,24 @@ if st.sidebar.button("Scrape All Teams"):
     conn = init_db()
     games_df = load_games(conn, league="MLB" if IS_MLB else "NBA")
     players_df = load_mlb_players(conn) if IS_MLB else load_players(conn)
+
+# ── Sidebar: Injury Report ───────────────────────────────────────────────────
+st.sidebar.divider()
+st.sidebar.header("Injury Report")
+if st.sidebar.button("Refresh Injuries"):
+    with st.sidebar.status("Fetching injury report from ESPN...", expanded=True):
+        league_key = "MLB" if IS_MLB else "NBA"
+        result = scrape_injuries(league_key)
+        st.sidebar.success(f"Updated {len(result)} injury entries.")
+    conn.close()
+    conn = init_db()
+
+injuries_df = load_injuries(conn, league="MLB" if IS_MLB else "NBA")
+if not injuries_df.empty:
+    out_count = len(injuries_df[injuries_df["status"].str.lower().isin(["out", "doubtful"])])
+    st.sidebar.caption(f"{len(injuries_df)} players on report ({out_count} Out/Doubtful)")
+else:
+    st.sidebar.caption("No injury data — click Refresh to fetch.")
 
 st.sidebar.divider()
 
@@ -463,7 +482,80 @@ with tab_pred:
                         unsafe_allow_html=True,
                     )
 
+        # ── Injury Report for Selected Teams ─────────────────────────────────
+        if not IS_MLB and not injuries_df.empty:
+            inj_a = injuries_df[injuries_df["team"] == h2h_team_a]
+            inj_b = injuries_df[injuries_df["team"] == h2h_team_b]
+            if not inj_a.empty or not inj_b.empty:
+                st.markdown("#### Injury Report")
+                inj_col1, inj_col2 = st.columns(2)
+                for inj_col, team, inj_team_df in [(inj_col1, h2h_team_a, inj_a), (inj_col2, h2h_team_b, inj_b)]:
+                    with inj_col:
+                        if inj_team_df.empty:
+                            st.markdown(f"**{team}** — All healthy ✅")
+                        else:
+                            st.markdown(f"**{team}** — {len(inj_team_df)} player(s)")
+                            for _, row in inj_team_df.iterrows():
+                                status = row["status"]
+                                if status.lower() == "out":
+                                    icon = "🔴"
+                                elif status.lower() == "doubtful":
+                                    icon = "🟠"
+                                elif status.lower() in ("questionable", "day-to-day"):
+                                    icon = "🟡"
+                                else:
+                                    icon = "⚪"
+                                parts = []
+                                if row.get("body_part") and str(row["body_part"]) != "nan":
+                                    part_str = str(row["body_part"])
+                                    if row.get("side") and str(row["side"]) != "nan":
+                                        part_str = f"{row['side']} {part_str}"
+                                    parts.append(part_str)
+                                if row.get("detail") and str(row["detail"]) != "nan":
+                                    parts.append(str(row["detail"]))
+                                injury_desc = " — ".join(parts) if parts else ""
+                                ret = row.get("return_date")
+                                ret_str = f" · Est. return: {ret}" if ret and str(ret) != "nan" else ""
+                                st.markdown(
+                                    f"{icon} **{row['player_name']}** ({status})"
+                                    f"{' — ' + injury_desc if injury_desc else ''}"
+                                    f"{ret_str}"
+                                )
+
         st.markdown("---")
+
+        # ── Today's Games & Starters ─────────────────────────────────────────
+        if not IS_MLB:
+            todays_games = fetch_todays_games()
+            # Find if the selected matchup is playing today
+            matchup_game = None
+            for tg in todays_games:
+                if (h2h_team_a in tg["home_team_full"] or h2h_team_a in tg["away_team_full"]) and \
+                   (h2h_team_b in tg["home_team_full"] or h2h_team_b in tg["away_team_full"]):
+                    matchup_game = tg
+                    break
+
+            if matchup_game:
+                st.markdown("#### Today's Matchup")
+                st.markdown(
+                    f"**{matchup_game['away_team_full']}** @ **{matchup_game['home_team_full']}** "
+                    f"— {matchup_game['status']}"
+                )
+                # Show confirmed starters if game is live or completed
+                if matchup_game["game_status"] >= 2:
+                    starters = fetch_starters(matchup_game["game_id"])
+                    if starters.get("home") or starters.get("away"):
+                        st.markdown("**Confirmed Starters:**")
+                        s_col1, s_col2 = st.columns(2)
+                        with s_col1:
+                            st.markdown(f"**{starters.get('away_team', 'Away')}**")
+                            for s in starters.get("away", []):
+                                st.markdown(f"- {s['name']} ({s['position']})")
+                        with s_col2:
+                            st.markdown(f"**{starters.get('home_team', 'Home')}**")
+                            for s in starters.get("home", []):
+                                st.markdown(f"- {s['name']} ({s['position']})")
+                st.markdown("---")
 
         h2h_df = head_to_head(h2h_team_a, h2h_team_b, num_games, games_df)
         if h2h_df.empty:
@@ -651,6 +743,190 @@ with tab_pred:
             st.info(f"**{h2h_team_b}** favored by **{abs(margin)} {spread_unit}**")
         else:
             st.info("Pick 'em — no advantage detected.")
+
+    # ── Projected Over/Under Total (NBA only) ────────────────────────────────
+    if not IS_MLB and not games_df.empty and h2h_team_a != h2h_team_b:
+        players_df_full = load_players(conn)
+        if not players_df_full.empty:
+            st.markdown("---")
+            st.markdown("#### Projected Total (Over/Under)")
+            proj = projected_total(
+                h2h_team_a, h2h_team_b, games_df, players_df_full,
+                home_team=home_team_val if 'home_team_val' in dir() else None, n=10,
+                injuries_df=injuries_df,
+            )
+            if "error" in proj:
+                st.warning(proj["error"])
+            else:
+                # Big projected total number
+                st.markdown(
+                    f'<div style="background:#1a1a2e;padding:20px;border-radius:10px;text-align:center;'
+                    f'border:2px solid #6c5ce7;margin-bottom:16px;">'
+                    f'<div style="font-size:3rem;font-weight:bold;color:#6c5ce7;">{proj["projected_total"]}</div>'
+                    f'<div style="color:#a0a0a0;font-size:0.9rem;">Projected Game Total</div></div>',
+                    unsafe_allow_html=True,
+                )
+
+                # Step-by-step breakdown
+                steps = proj["steps"]
+                with st.expander("Step-by-step breakdown", expanded=True):
+                    # Step 1 — Base Total
+                    s1 = steps["step_1_base"]
+                    st.markdown("**Step 1 — Base Total**")
+                    st.markdown(
+                        f"Pace: {h2h_team_a} **{s1['pace_a']}** | {h2h_team_b} **{s1['pace_b']}** "
+                        f"→ Expected possessions: **{s1['expected_possessions']}**"
+                    )
+                    st.markdown(
+                        f"ORtg/DRtg: {h2h_team_a} **{s1['ortg_a']}/{s1['drtg_a']}** | "
+                        f"{h2h_team_b} **{s1['ortg_b']}/{s1['drtg_b']}**"
+                    )
+                    st.markdown(
+                        f"Expected ORtg: {h2h_team_a} **{s1['exp_ortg_a']}** | "
+                        f"{h2h_team_b} **{s1['exp_ortg_b']}**"
+                    )
+                    st.markdown(f"Base total = {s1['expected_possessions']} x "
+                                f"({s1['exp_ortg_a']} + {s1['exp_ortg_b']}) / 100 = **{s1['base_total']}**")
+                    st.markdown("---")
+
+                    # Step 2 — Shooting
+                    s2 = steps["step_2_shooting"]
+                    st.markdown("**Step 2 — Shooting Adjustment**")
+                    if s2.get("skipped"):
+                        st.warning(f"Skipped: {s2.get('reason', 'missing data')}")
+                    else:
+                        st.markdown(
+                            f"eFG%: {h2h_team_a} **{s2['efg_a']}%** | {h2h_team_b} **{s2['efg_b']}%** | "
+                            f"League avg **{s2['league_avg_efg']}%**"
+                        )
+                        st.markdown(
+                            f"Opp eFG% allowed: {h2h_team_a} **{s2['opp_efg_a']}%** | "
+                            f"{h2h_team_b} **{s2['opp_efg_b']}%**"
+                        )
+                        st.markdown(
+                            f"Matchup eFG%: {h2h_team_a} **{s2['matchup_efg_a']}%** | "
+                            f"{h2h_team_b} **{s2['matchup_efg_b']}%**"
+                        )
+                        st.markdown(f"Adjustment: **{s2['adjustment']:+.1f}** pts")
+                    st.markdown("---")
+
+                    # Step 3 — Turnovers
+                    s3 = steps["step_3_turnovers"]
+                    st.markdown("**Step 3 — Turnover Adjustment**")
+                    if s3.get("skipped"):
+                        st.warning("Skipped: missing data")
+                    else:
+                        st.markdown(
+                            f"TOV%: {h2h_team_a} **{s3['tov_rate_a']}%** | {h2h_team_b} **{s3['tov_rate_b']}%** | "
+                            f"League avg **{s3['league_avg_tov']}%**"
+                        )
+                        st.markdown(f"Adjustment: **{s3['adjustment']:+.1f}** pts")
+                    st.markdown("---")
+
+                    # Step 4 — Free Throws
+                    s4 = steps["step_4_free_throws"]
+                    st.markdown("**Step 4 — Free Throw Adjustment**")
+                    if s4.get("skipped"):
+                        st.warning("Skipped: missing data")
+                    else:
+                        st.markdown(
+                            f"FT Rate: {h2h_team_a} **{s4['ft_rate_a']}%** | "
+                            f"{h2h_team_b} **{s4['ft_rate_b']}%** | League avg **{s4['league_avg_ft_rate']}%**"
+                        )
+                        st.markdown(f"Adjustment: **{s4['adjustment']:+.1f}** pts")
+                    st.markdown("---")
+
+                    # Step 5 — Rest
+                    s5 = steps["step_5_rest"]
+                    st.markdown("**Step 5 — Rest Adjustment**")
+                    rest_a_str = f"{s5['rest_days_a']} day(s)" if s5['rest_days_a'] is not None else "unknown"
+                    rest_b_str = f"{s5['rest_days_b']} day(s)" if s5['rest_days_b'] is not None else "unknown"
+                    if s5.get("b2b_a"):
+                        rest_a_str += " (B2B)"
+                    if s5.get("b2b_b"):
+                        rest_b_str += " (B2B)"
+                    st.markdown(f"Rest: {h2h_team_a} **{rest_a_str}** | {h2h_team_b} **{rest_b_str}**")
+                    st.markdown(f"Adjustment: **{s5['adjustment']:+.1f}** pts")
+                    st.markdown("---")
+
+                    # Step 6 — Home Court
+                    s6 = steps["step_6_home_court"]
+                    st.markdown("**Step 6 — Home Court**")
+                    st.markdown(f"Home team: **{s6['home_team']}** → Adjustment: **{s6['adjustment']:+.1f}** pts")
+                    st.markdown("---")
+
+                    # Step 7 — Recent Form
+                    s7 = steps["step_7_form"]
+                    st.markdown("**Step 7 — Recent Form**")
+                    if s7.get("skipped"):
+                        st.warning("Skipped: not enough season data")
+                    else:
+                        st.markdown(
+                            f"{h2h_team_a}: Recent ORtg **{s7['recent_ortg_a']}** vs Season **{s7['season_ortg_a']}** "
+                            f"(delta **{s7['form_delta_a']:+.1f}**)"
+                        )
+                        st.markdown(
+                            f"{h2h_team_b}: Recent ORtg **{s7['recent_ortg_b']}** vs Season **{s7['season_ortg_b']}** "
+                            f"(delta **{s7['form_delta_b']:+.1f}**)"
+                        )
+                        st.markdown(f"Adjustment: **{s7['adjustment']:+.1f}** pts")
+                    st.markdown("---")
+
+                    # Step 8 — Injuries
+                    s8 = steps["step_8_injuries"]
+                    st.markdown("**Step 8 — Injury Adjustment**")
+                    if s8.get("skipped"):
+                        st.warning(f"Skipped: {s8.get('reason', 'no injury data')} — click **Refresh Injuries** in sidebar")
+                    else:
+                        _tier_colors = {"Star": "#e74c3c", "Starter": "#e67e22", "Bench": "#95a5a6", "Unknown": "#7f8c8d"}
+                        for side_label, side_key in [
+                            (h2h_team_a, "injured_out_a"),
+                            (h2h_team_b, "injured_out_b"),
+                        ]:
+                            injured_list = s8.get(side_key, [])
+                            if injured_list:
+                                # Count only players with actual impact
+                                impactful = [p for p in injured_list if p.get("impact_pts", 0) > 0]
+                                st.markdown(f"**{side_label}** — {len(injured_list)} player(s) on report ({len(impactful)} with scoring impact):")
+                                for ip in sorted(injured_list, key=lambda x: x.get("impact_pts", 0), reverse=True):
+                                    tier = ip.get("tier", "Unknown")
+                                    tc = _tier_colors.get(tier, "#95a5a6")
+                                    miss = ip.get("miss_prob", 1.0)
+                                    miss_str = f"{int(miss * 100)}% miss" if miss < 1.0 else ""
+                                    impact = ip.get("impact_pts", 0)
+                                    ret = ip.get("return_date", "")
+                                    ret_str = f" · Return: {ret}" if ret and ret != "Unknown" else ""
+
+                                    st.markdown(
+                                        f'- <span style="color:{tc};font-weight:700;">[{tier}]</span> '
+                                        f"**{ip['name']}** ({ip['status']}) — "
+                                        f"{ip.get('body_part', '—')}/{ip.get('injury', '—')} · "
+                                        f"**{ip['avg_ppg']} PPG** / {ip.get('avg_apg', 0)} APG / "
+                                        f"{ip.get('minutes', 0)} min · "
+                                        f"Impact: **-{impact:.1f} pts**"
+                                        f"{' · ' + miss_str if miss_str else ''}"
+                                        f"{ret_str}",
+                                        unsafe_allow_html=True,
+                                    )
+                            else:
+                                st.markdown(f"**{side_label}** — No players on injury report ✅")
+                        st.markdown(f"Adjustment: **{s8['adjustment']:+.1f}** pts")
+
+                    # Final summary
+                    st.markdown("---")
+                    f = steps["final"]
+                    st.markdown("**Final Calculation**")
+                    st.markdown(
+                        f"**{f['base_total']}** (base) "
+                        f"**{f['shooting_adj']:+.1f}** (shooting) "
+                        f"**{f['tov_adj']:+.1f}** (TOV) "
+                        f"**{f['ft_adj']:+.1f}** (FT) "
+                        f"**{f['rest_adj']:+.1f}** (rest) "
+                        f"**{f['home_adj']:+.1f}** (home) "
+                        f"**{f['form_adj']:+.1f}** (form) "
+                        f"**{f['injury_adj']:+.1f}** (injuries) "
+                        f"= **{f['projected_total']}**"
+                    )
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Tab 5: Top Performers
