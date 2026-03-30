@@ -49,16 +49,38 @@ def init_db(db_path="cloudscout.db"):
             points INTEGER,
             assists INTEGER,
             rebounds INTEGER,
+            off_rebounds INTEGER,
+            def_rebounds INTEGER,
             steals INTEGER,
             blocks INTEGER,
             turnovers INTEGER,
             minutes TEXT,
+            field_goals_made INTEGER,
+            field_goals_attempted INTEGER,
             field_goal_pct REAL,
+            three_pointers_made INTEGER,
+            three_pointers_attempted INTEGER,
             three_point_pct REAL,
+            free_throws_made INTEGER,
+            free_throws_attempted INTEGER,
+            free_throw_pct REAL,
+            plus_minus INTEGER,
             FOREIGN KEY (game_id) REFERENCES games(id),
             UNIQUE (name, game_id)
         )
     """)
+
+    # Add new columns to existing players table if upgrading from older schema
+    _add_column_if_missing(cursor, "players", "off_rebounds", "INTEGER")
+    _add_column_if_missing(cursor, "players", "def_rebounds", "INTEGER")
+    _add_column_if_missing(cursor, "players", "field_goals_made", "INTEGER")
+    _add_column_if_missing(cursor, "players", "field_goals_attempted", "INTEGER")
+    _add_column_if_missing(cursor, "players", "three_pointers_made", "INTEGER")
+    _add_column_if_missing(cursor, "players", "three_pointers_attempted", "INTEGER")
+    _add_column_if_missing(cursor, "players", "free_throws_made", "INTEGER")
+    _add_column_if_missing(cursor, "players", "free_throws_attempted", "INTEGER")
+    _add_column_if_missing(cursor, "players", "free_throw_pct", "REAL")
+    _add_column_if_missing(cursor, "players", "plus_minus", "INTEGER")
 
     # MLB players table — separate from NBA players because stats differ
     # fundamentally between batters and pitchers. role = 'batter' or 'pitcher'.
@@ -88,8 +110,36 @@ def init_db(db_path="cloudscout.db"):
         )
     """)
 
+    # Injury reports — stores official injury data from ESPN
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS injuries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_name TEXT NOT NULL,
+            team TEXT NOT NULL,
+            status TEXT NOT NULL,
+            injury_type TEXT,
+            body_part TEXT,
+            detail TEXT,
+            side TEXT,
+            return_date TEXT,
+            short_comment TEXT,
+            long_comment TEXT,
+            last_updated TEXT NOT NULL,
+            league TEXT NOT NULL DEFAULT 'NBA',
+            UNIQUE (player_name, team, league)
+        )
+    """)
+
     conn.commit()
     return conn
+
+
+def _add_column_if_missing(cursor, table, column, col_type):
+    """Add a column to a table if it doesn't already exist (for schema migrations)."""
+    cursor.execute(f"PRAGMA table_info({table})")
+    existing = [row[1] for row in cursor.fetchall()]
+    if column not in existing:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
 
 def game_exists(conn, game_id):
@@ -153,14 +203,22 @@ def insert_players(conn, players):
     cursor.executemany("""
         INSERT OR IGNORE INTO players
             (name, team, date, game_id, points, assists, rebounds,
-             steals, blocks, turnovers, minutes, field_goal_pct, three_point_pct)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             off_rebounds, def_rebounds, steals, blocks, turnovers, minutes,
+             field_goals_made, field_goals_attempted, field_goal_pct,
+             three_pointers_made, three_pointers_attempted, three_point_pct,
+             free_throws_made, free_throws_attempted, free_throw_pct, plus_minus)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
         (
             p["name"], p["team"], p["date"], p["game_id"],
             p.get("points"), p.get("assists"), p.get("rebounds"),
+            p.get("off_rebounds"), p.get("def_rebounds"),
             p.get("steals"), p.get("blocks"), p.get("turnovers"),
-            p.get("minutes"), p.get("field_goal_pct"), p.get("three_point_pct"),
+            p.get("minutes"),
+            p.get("field_goals_made"), p.get("field_goals_attempted"), p.get("field_goal_pct"),
+            p.get("three_pointers_made"), p.get("three_pointers_attempted"), p.get("three_point_pct"),
+            p.get("free_throws_made"), p.get("free_throws_attempted"), p.get("free_throw_pct"),
+            p.get("plus_minus"),
         )
         for p in players
     ])
@@ -288,4 +346,61 @@ def load_players(conn, player_name=None, team=None):
         params.append(team)
 
     query += " ORDER BY date DESC"
+    return pd.read_sql_query(query, conn, params=params)
+
+
+def upsert_injuries(conn, injuries):
+    """
+    Insert or replace injury records. Uses UNIQUE(player_name, team, league)
+    so each refresh replaces stale entries for the same player.
+
+    Args:
+        conn: SQLite connection object
+        injuries: list of dicts with keys matching the injuries table columns
+    """
+    cursor = conn.cursor()
+    cursor.executemany("""
+        INSERT OR REPLACE INTO injuries
+            (player_name, team, status, injury_type, body_part, detail,
+             side, return_date, short_comment, long_comment, last_updated, league)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [
+        (
+            i["player_name"], i["team"], i["status"],
+            i.get("injury_type"), i.get("body_part"), i.get("detail"),
+            i.get("side"), i.get("return_date"),
+            i.get("short_comment"), i.get("long_comment"),
+            i["last_updated"], i.get("league", "NBA"),
+        )
+        for i in injuries
+    ])
+    conn.commit()
+
+
+def clear_injuries(conn, league="NBA"):
+    """Remove all injury records for a league before a full refresh."""
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM injuries WHERE league = ?", (league,))
+    conn.commit()
+
+
+def load_injuries(conn, team=None, league="NBA"):
+    """
+    Load injury records from the database into a pandas DataFrame.
+    Optionally filter by team.
+
+    Args:
+        conn: SQLite connection object
+        team: optional team name to filter by
+        league: league to filter by (default: "NBA")
+
+    Returns:
+        pandas DataFrame of injury records
+    """
+    query = "SELECT * FROM injuries WHERE league = ?"
+    params = [league]
+    if team:
+        query += " AND team = ?"
+        params.append(team)
+    query += " ORDER BY team, status, player_name"
     return pd.read_sql_query(query, conn, params=params)
