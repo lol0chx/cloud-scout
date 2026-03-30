@@ -5,16 +5,24 @@ Fetches NBA game results and player box score statistics from
 stats.nba.com via the nba_api library. No API key required.
 Includes rate limiting, duplicate detection, and returns results
 as pandas DataFrames.
+
+Also fetches official injury reports from ESPN and today's
+projected starters from the NBA CDN.
 """
 
 import time
+import json
 from datetime import datetime
 
+import requests
 import pandas as pd
 from nba_api.stats.static import teams as nba_teams
 from nba_api.stats.endpoints import TeamGameLog, BoxScoreTraditionalV3
 
-from database import init_db, game_exists, insert_game, insert_players
+from database import (
+    init_db, game_exists, insert_game, insert_players,
+    clear_injuries, upsert_injuries,
+)
 
 # Configuration constants
 LEAGUE = "NBA"
@@ -124,16 +132,27 @@ def fetch_games(team, season=DEFAULT_SEASON, last=15):
         game_id = row["Game_ID"]  # string like "0022500123"
         game_id_int = int(game_id)  # store as int in the database
 
-        # Skip games we already have in the database, unless they have 0 scores (corrupt)
+        # Skip games we already have, unless scores are 0-0 or player stats are missing
         if game_exists(conn, game_id_int):
             cursor = conn.cursor()
             cursor.execute("SELECT home_score, away_score FROM games WHERE id = ?", (game_id_int,))
-            row = cursor.fetchone()
-            if row and not (row[0] == 0 and row[1] == 0):
+            score_row = cursor.fetchone()
+            is_corrupt = score_row and score_row[0] == 0 and score_row[1] == 0
+
+            # Check if player shooting columns are populated
+            cursor.execute(
+                "SELECT COUNT(*) FROM players WHERE game_id = ? AND field_goals_made IS NOT NULL",
+                (game_id_int,),
+            )
+            has_shooting = cursor.fetchone()[0] > 0
+
+            if not is_corrupt and has_shooting:
                 print(f"  Game {game_id} already in DB, skipping.")
                 continue
-            # Corrupt 0-0 record — delete and re-fetch
-            print(f"  Game {game_id} has 0-0 score, re-fetching...")
+
+            # Stale record — delete and re-fetch
+            reason = "0-0 score" if is_corrupt else "missing shooting data"
+            print(f"  Game {game_id} has {reason}, re-fetching...")
             cursor.execute("DELETE FROM games WHERE id = ?", (game_id_int,))
             cursor.execute("DELETE FROM players WHERE game_id = ?", (game_id_int,))
             conn.commit()
@@ -197,27 +216,46 @@ def fetch_player_stats(game_id, game_date):
         print(f"  No player stats returned for game {game_id}.")
         return [], pd.DataFrame()
 
-    # Map each player's V3 stats to our database schema
-    # V3 uses camelCase column names: firstName, familyName, teamTricode,
-    # points, assists, reboundsTotal, steals, blocks, turnovers, minutes,
-    # fieldGoalsPercentage, threePointersPercentage
+    # Map each player's V3 stats to our database schema.
+    # BoxScoreTraditionalV3 camelCase fields used here:
+    #   fieldGoalsMade, fieldGoalsAttempted, fieldGoalsPercentage
+    #   threePointersMade, threePointersAttempted, threePointersPercentage
+    #   freeThrowsMade, freeThrowsAttempted, freeThrowsPercentage
+    #   reboundsOffensive, reboundsDefensive, reboundsTotal
+    #   plusMinusPoints
     players_list = []
     for _, row in player_df.iterrows():
         full_name = f"{row.get('firstName', '')} {row.get('familyName', '')}".strip()
+        fgm = _safe_int(row.get("fieldGoalsMade"))
+        fga = _safe_int(row.get("fieldGoalsAttempted"))
+        tpm = _safe_int(row.get("threePointersMade"))
+        tpa = _safe_int(row.get("threePointersAttempted"))
+        ftm = _safe_int(row.get("freeThrowsMade"))
+        fta = _safe_int(row.get("freeThrowsAttempted"))
         players_list.append({
             "name": full_name or "Unknown",
             "team": _tricode_to_full_name(row.get("teamTricode", "")),
             "date": game_date,
             "game_id": int(game_id),
-            "points": _safe_int(row.get("points")),
-            "assists": _safe_int(row.get("assists")),
-            "rebounds": _safe_int(row.get("reboundsTotal")),
-            "steals": _safe_int(row.get("steals")),
-            "blocks": _safe_int(row.get("blocks")),
-            "turnovers": _safe_int(row.get("turnovers")),
-            "minutes": str(row.get("minutes", "0")),
-            "field_goal_pct": _safe_float(row.get("fieldGoalsPercentage")),
-            "three_point_pct": _safe_float(row.get("threePointersPercentage")),
+            "points":               _safe_int(row.get("points")),
+            "assists":              _safe_int(row.get("assists")),
+            "rebounds":             _safe_int(row.get("reboundsTotal")),
+            "off_rebounds":         _safe_int(row.get("reboundsOffensive")),
+            "def_rebounds":         _safe_int(row.get("reboundsDefensive")),
+            "steals":               _safe_int(row.get("steals")),
+            "blocks":               _safe_int(row.get("blocks")),
+            "turnovers":            _safe_int(row.get("turnovers")),
+            "minutes":              str(row.get("minutes", "0")),
+            "field_goals_made":         fgm,
+            "field_goals_attempted":    fga,
+            "field_goal_pct":           _safe_float(row.get("fieldGoalsPercentage")),
+            "three_pointers_made":      tpm,
+            "three_pointers_attempted": tpa,
+            "three_point_pct":          _safe_float(row.get("threePointersPercentage")),
+            "free_throws_made":         ftm,
+            "free_throws_attempted":    fta,
+            "free_throw_pct":           _safe_float(row.get("freeThrowsPercentage")),
+            "plus_minus":               _safe_int(row.get("plusMinusPoints")),
         })
 
     return players_list, team_df
@@ -346,3 +384,162 @@ def scrape_team(team, last=15):
 
     print(f"Done! Saved {len(all_games)} games and {len(all_players)} player stat lines for {team}.")
     return games_df, players_df
+
+
+# ── ESPN Injury Report ──────────────────────────────────────────────────────
+
+# Map ESPN team displayName → nba_api full_name for teams that differ
+_ESPN_TEAM_MAP = {
+    "LA Clippers": "LA Clippers",
+    "Los Angeles Clippers": "LA Clippers",
+}
+
+
+def _espn_team_to_nba(espn_name):
+    """Convert an ESPN team display name to the nba_api canonical name."""
+    if espn_name in _ESPN_TEAM_MAP:
+        return _ESPN_TEAM_MAP[espn_name]
+    # Most ESPN names match nba_api exactly
+    return espn_name
+
+
+def fetch_injuries(league="NBA"):
+    """
+    Fetch the current official injury report from ESPN's public API.
+    Returns a list of injury dicts ready for database insertion.
+
+    Each dict contains:
+        player_name, team, status, injury_type, body_part, detail,
+        side, return_date, short_comment, long_comment, last_updated, league
+    """
+    if league == "MLB":
+        url = "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/injuries"
+    else:
+        url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
+
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"Failed to fetch {league} injury report from ESPN: {e}")
+        return []
+
+    injuries = []
+    for team_block in data.get("injuries", data.get("items", [])):
+        espn_team = team_block.get("displayName", "")
+        team_name = _espn_team_to_nba(espn_team) if league == "NBA" else espn_team
+
+        for entry in team_block.get("injuries", []):
+            athlete = entry.get("athlete", {})
+            details = entry.get("details", {})
+
+            injuries.append({
+                "player_name": athlete.get("displayName", "Unknown"),
+                "team": team_name,
+                "status": entry.get("status", entry.get("type", {}).get("description", "Unknown")),
+                "injury_type": details.get("type"),
+                "body_part": details.get("location"),
+                "detail": details.get("detail"),
+                "side": details.get("side"),
+                "return_date": details.get("returnDate"),
+                "short_comment": entry.get("shortComment"),
+                "long_comment": entry.get("longComment"),
+                "last_updated": entry.get("date", datetime.now().isoformat()),
+                "league": league,
+            })
+
+    print(f"Fetched {len(injuries)} {league} injury entries from ESPN.")
+    return injuries
+
+
+def scrape_injuries(league="NBA"):
+    """
+    Fetch injuries from ESPN and save them to the database.
+    Clears old records first so the table always reflects the current report.
+    """
+    injuries = fetch_injuries(league)
+    if not injuries:
+        return []
+
+    conn = init_db()
+    clear_injuries(conn, league)
+    upsert_injuries(conn, injuries)
+    conn.close()
+    print(f"Saved {len(injuries)} {league} injuries to database.")
+    return injuries
+
+
+# ── Today's Scoreboard & Projected Starters ─────────────────────────────────
+
+NBA_SCOREBOARD_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
+NBA_BOXSCORE_URL = "https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{game_id}.json"
+
+_NBA_HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Referer": "https://www.nba.com/",
+    "Accept": "application/json",
+}
+
+
+def fetch_todays_games():
+    """
+    Fetch today's NBA scoreboard (scheduled, live, and completed games).
+    Returns a list of dicts with game_id, home_team, away_team, status, start_time.
+    """
+    try:
+        resp = requests.get(NBA_SCOREBOARD_URL, headers=_NBA_HEADERS, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"Failed to fetch NBA scoreboard: {e}")
+        return []
+
+    games = []
+    for g in data.get("scoreboard", {}).get("games", []):
+        games.append({
+            "game_id": g.get("gameId", ""),
+            "home_team": g.get("homeTeam", {}).get("teamName", ""),
+            "home_team_full": g.get("homeTeam", {}).get("teamCity", "") + " " + g.get("homeTeam", {}).get("teamName", ""),
+            "away_team": g.get("awayTeam", {}).get("teamName", ""),
+            "away_team_full": g.get("awayTeam", {}).get("teamCity", "") + " " + g.get("awayTeam", {}).get("teamName", ""),
+            "status": g.get("gameStatusText", ""),
+            "game_status": g.get("gameStatus", 0),  # 1=scheduled, 2=live, 3=final
+        })
+    return games
+
+
+def fetch_starters(game_id):
+    """
+    Fetch confirmed starters for a specific NBA game from the NBA CDN boxscore.
+    Only works for live or completed games (gameStatus >= 2).
+
+    Returns dict with 'home' and 'away' keys, each a list of starter dicts:
+        {name, position, jersey_number}
+    """
+    url = NBA_BOXSCORE_URL.format(game_id=game_id)
+    try:
+        resp = requests.get(url, headers=_NBA_HEADERS, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"Failed to fetch boxscore for game {game_id}: {e}")
+        return {"home": [], "away": []}
+
+    game = data.get("game", {})
+    result = {}
+    for side in ("home", "away"):
+        team_data = game.get(f"{side}Team", {})
+        starters = []
+        for p in team_data.get("players", []):
+            if p.get("starter") == "1":
+                starters.append({
+                    "name": p.get("name", ""),
+                    "position": p.get("position", ""),
+                    "jersey_number": p.get("jerseyNum", ""),
+                })
+        result[side] = starters
+        team_name = f"{team_data.get('teamCity', '')} {team_data.get('teamName', '')}".strip()
+        result[f"{side}_team"] = team_name
+
+    return result
