@@ -262,7 +262,8 @@ def get_prediction(team_a: str, team_b: str, league: str = "NBA", home: str = ""
         if df.empty:
             raise HTTPException(404, "No games in database")
         home_team = home if home in [team_a, team_b] else None
-        prob_a, prob_b, margin = win_probability(team_a, team_b, df, home_team=home_team)
+        _logit_scale = 3.5 if league.upper() == "MLB" else 6.0
+        prob_a, prob_b, margin = win_probability(team_a, team_b, df, home_team=home_team, pts_per_logit=_logit_scale)
 
         def _record(team):
             tg = df[(df["home_team"] == team) | (df["away_team"] == team)]
