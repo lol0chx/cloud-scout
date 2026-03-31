@@ -81,7 +81,8 @@ players_df = load_mlb_players(conn) if IS_MLB else load_players(conn)
 
 # ── Sidebar: Settings ─────────────────────────────────────────────────────────
 st.sidebar.header("Settings")
-num_games = st.sidebar.slider("Number of games", 1, 100, 10)
+_max_games = 200 if IS_MLB else 100
+num_games = st.sidebar.slider("Number of games", 1, _max_games, 10)
 if IS_MLB:
     mlb_season = st.sidebar.slider("Season", 2020, 2026, MLB_DEFAULT_SEASON)
 
@@ -90,7 +91,8 @@ st.sidebar.divider()
 # ── Sidebar: Scrape Data ──────────────────────────────────────────────────────
 st.sidebar.header("Scrape Data")
 scrape_team_name = st.sidebar.selectbox("Team to scrape", ALL_TEAMS, key="scrape_team")
-scrape_count = st.sidebar.slider("Games to scrape", 5, 82, 15, key="scrape_count")
+_max_scrape = 200 if IS_MLB else 82
+scrape_count = st.sidebar.slider("Games to scrape", 5, _max_scrape, 15, key="scrape_count")
 
 if st.sidebar.button("Scrape Team"):
     with st.sidebar.status(f"Scraping {scrape_team_name}...", expanded=True):
