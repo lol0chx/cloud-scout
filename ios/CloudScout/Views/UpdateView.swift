@@ -37,7 +37,7 @@ struct UpdateView: View {
                         Slider(value: Binding(
                             get: { Double(gamesCount) },
                             set: { gamesCount = Int($0) }
-                        ), in: 5...82, step: 1)
+                        ), in: 5...200, step: 1)
                         .tint(.appPrimary)
                     }
                     .padding(.bottom, 16)
