@@ -719,7 +719,8 @@ with tab_pred:
         home_options = ["Neutral", h2h_team_a, h2h_team_b]
         pred_home = col3.selectbox("Home team", home_options, key="pred_home")
         home_team_val = None if pred_home == "Neutral" else pred_home
-        prob_a, prob_b, margin = win_probability(h2h_team_a, h2h_team_b, games_df, home_team=home_team_val)
+        _logit_scale = 3.5 if IS_MLB else 6.0
+        prob_a, prob_b, margin = win_probability(h2h_team_a, h2h_team_b, games_df, home_team=home_team_val, pts_per_logit=_logit_scale)
 
         pc1, pc2 = st.columns(2)
         fav_color_a = "#2ea44f" if prob_a >= prob_b else "#cf222e"
