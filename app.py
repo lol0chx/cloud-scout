@@ -772,159 +772,131 @@ with tab_pred:
                 with st.expander("Step-by-step breakdown", expanded=True):
                     # Step 1 — Base Total
                     s1 = steps["step_1_base"]
-                    st.markdown("**Step 1 — Base Total**")
                     st.markdown(
+                        f"**Step 1 — Base Total**<br>"
                         f"Pace: {h2h_team_a} **{s1['pace_a']}** | {h2h_team_b} **{s1['pace_b']}** "
-                        f"→ Expected possessions: **{s1['expected_possessions']}**"
-                    )
-                    st.markdown(
+                        f"→ Poss: **{s1['expected_possessions']}**<br>"
                         f"ORtg/DRtg: {h2h_team_a} **{s1['ortg_a']}/{s1['drtg_a']}** | "
-                        f"{h2h_team_b} **{s1['ortg_b']}/{s1['drtg_b']}**"
+                        f"{h2h_team_b} **{s1['ortg_b']}/{s1['drtg_b']}** → "
+                        f"Exp ORtg: **{s1['exp_ortg_a']}** / **{s1['exp_ortg_b']}**<br>"
+                        f"Base total = {s1['expected_possessions']} x "
+                        f"({s1['exp_ortg_a']} + {s1['exp_ortg_b']}) / 100 = **{s1['base_total']}**",
+                        unsafe_allow_html=True,
                     )
-                    st.markdown(
-                        f"Expected ORtg: {h2h_team_a} **{s1['exp_ortg_a']}** | "
-                        f"{h2h_team_b} **{s1['exp_ortg_b']}**"
-                    )
-                    st.markdown(f"Base total = {s1['expected_possessions']} x "
-                                f"({s1['exp_ortg_a']} + {s1['exp_ortg_b']}) / 100 = **{s1['base_total']}**")
-                    st.markdown("---")
 
                     # Step 2 — Shooting
                     s2 = steps["step_2_shooting"]
-                    st.markdown("**Step 2 — Shooting Adjustment**")
                     if s2.get("skipped"):
-                        st.warning(f"Skipped: {s2.get('reason', 'missing data')}")
+                        st.markdown(f"**Step 2 — Shooting** — _Skipped: {s2.get('reason', 'missing data')}_")
                     else:
                         st.markdown(
-                            f"eFG%: {h2h_team_a} **{s2['efg_a']}%** | {h2h_team_b} **{s2['efg_b']}%** | "
-                            f"League avg **{s2['league_avg_efg']}%**"
+                            f"**Step 2 — Shooting** — "
+                            f"eFG%: **{s2['efg_a']}%** / **{s2['efg_b']}%** (lg avg {s2['league_avg_efg']}%) · "
+                            f"Opp eFG%: **{s2['opp_efg_a']}%** / **{s2['opp_efg_b']}%** · "
+                            f"Matchup: **{s2['matchup_efg_a']}%** / **{s2['matchup_efg_b']}%** → "
+                            f"**{s2['adjustment']:+.1f}** pts"
                         )
-                        st.markdown(
-                            f"Opp eFG% allowed: {h2h_team_a} **{s2['opp_efg_a']}%** | "
-                            f"{h2h_team_b} **{s2['opp_efg_b']}%**"
-                        )
-                        st.markdown(
-                            f"Matchup eFG%: {h2h_team_a} **{s2['matchup_efg_a']}%** | "
-                            f"{h2h_team_b} **{s2['matchup_efg_b']}%**"
-                        )
-                        st.markdown(f"Adjustment: **{s2['adjustment']:+.1f}** pts")
-                    st.markdown("---")
 
                     # Step 3 — Turnovers
                     s3 = steps["step_3_turnovers"]
-                    st.markdown("**Step 3 — Turnover Adjustment**")
                     if s3.get("skipped"):
-                        st.warning("Skipped: missing data")
+                        st.markdown("**Step 3 — Turnovers** — _Skipped_")
                     else:
                         st.markdown(
-                            f"TOV%: {h2h_team_a} **{s3['tov_rate_a']}%** | {h2h_team_b} **{s3['tov_rate_b']}%** | "
-                            f"League avg **{s3['league_avg_tov']}%**"
+                            f"**Step 3 — Turnovers** — "
+                            f"TOV%: **{s3['tov_rate_a']}%** / **{s3['tov_rate_b']}%** (lg avg {s3['league_avg_tov']}%) → "
+                            f"**{s3['adjustment']:+.1f}** pts"
                         )
-                        st.markdown(f"Adjustment: **{s3['adjustment']:+.1f}** pts")
-                    st.markdown("---")
 
                     # Step 4 — Free Throws
                     s4 = steps["step_4_free_throws"]
-                    st.markdown("**Step 4 — Free Throw Adjustment**")
                     if s4.get("skipped"):
-                        st.warning("Skipped: missing data")
+                        st.markdown("**Step 4 — Free Throws** — _Skipped_")
                     else:
                         st.markdown(
-                            f"FT Rate: {h2h_team_a} **{s4['ft_rate_a']}%** | "
-                            f"{h2h_team_b} **{s4['ft_rate_b']}%** | League avg **{s4['league_avg_ft_rate']}%**"
+                            f"**Step 4 — Free Throws** — "
+                            f"FT Rate: **{s4['ft_rate_a']}%** / **{s4['ft_rate_b']}%** (lg avg {s4['league_avg_ft_rate']}%) → "
+                            f"**{s4['adjustment']:+.1f}** pts"
                         )
-                        st.markdown(f"Adjustment: **{s4['adjustment']:+.1f}** pts")
-                    st.markdown("---")
 
                     # Step 5 — Rest
                     s5 = steps["step_5_rest"]
-                    st.markdown("**Step 5 — Rest Adjustment**")
-                    rest_a_str = f"{s5['rest_days_a']} day(s)" if s5['rest_days_a'] is not None else "unknown"
-                    rest_b_str = f"{s5['rest_days_b']} day(s)" if s5['rest_days_b'] is not None else "unknown"
+                    rest_a_str = f"{s5['rest_days_a']}d" if s5['rest_days_a'] is not None else "?"
+                    rest_b_str = f"{s5['rest_days_b']}d" if s5['rest_days_b'] is not None else "?"
                     if s5.get("b2b_a"):
                         rest_a_str += " (B2B)"
                     if s5.get("b2b_b"):
                         rest_b_str += " (B2B)"
-                    st.markdown(f"Rest: {h2h_team_a} **{rest_a_str}** | {h2h_team_b} **{rest_b_str}**")
-                    st.markdown(f"Adjustment: **{s5['adjustment']:+.1f}** pts")
-                    st.markdown("---")
+                    st.markdown(
+                        f"**Step 5 — Rest** — "
+                        f"{h2h_team_a} **{rest_a_str}** | {h2h_team_b} **{rest_b_str}** → "
+                        f"**{s5['adjustment']:+.1f}** pts"
+                    )
 
                     # Step 6 — Home Court
                     s6 = steps["step_6_home_court"]
-                    st.markdown("**Step 6 — Home Court**")
-                    st.markdown(f"Home team: **{s6['home_team']}** → Adjustment: **{s6['adjustment']:+.1f}** pts")
-                    st.markdown("---")
+                    st.markdown(
+                        f"**Step 6 — Home Court** — "
+                        f"**{s6['home_team']}** → **{s6['adjustment']:+.1f}** pts"
+                    )
 
                     # Step 7 — Recent Form
                     s7 = steps["step_7_form"]
-                    st.markdown("**Step 7 — Recent Form**")
                     if s7.get("skipped"):
-                        st.warning("Skipped: not enough season data")
+                        st.markdown("**Step 7 — Recent Form** — _Skipped: not enough season data_")
                     else:
                         st.markdown(
-                            f"{h2h_team_a}: Recent ORtg **{s7['recent_ortg_a']}** vs Season **{s7['season_ortg_a']}** "
-                            f"(delta **{s7['form_delta_a']:+.1f}**)"
+                            f"**Step 7 — Recent Form** — "
+                            f"{h2h_team_a}: ORtg **{s7['recent_ortg_a']}** vs season **{s7['season_ortg_a']}** "
+                            f"(Δ **{s7['form_delta_a']:+.1f}**) | "
+                            f"{h2h_team_b}: **{s7['recent_ortg_b']}** vs **{s7['season_ortg_b']}** "
+                            f"(Δ **{s7['form_delta_b']:+.1f}**) → "
+                            f"**{s7['adjustment']:+.1f}** pts"
                         )
-                        st.markdown(
-                            f"{h2h_team_b}: Recent ORtg **{s7['recent_ortg_b']}** vs Season **{s7['season_ortg_b']}** "
-                            f"(delta **{s7['form_delta_b']:+.1f}**)"
-                        )
-                        st.markdown(f"Adjustment: **{s7['adjustment']:+.1f}** pts")
-                    st.markdown("---")
 
                     # Step 8 — Injuries
                     s8 = steps["step_8_injuries"]
-                    st.markdown("**Step 8 — Injury Adjustment**")
                     if s8.get("skipped"):
-                        st.warning(f"Skipped: {s8.get('reason', 'no injury data')} — click **Refresh Injuries** in sidebar")
+                        st.markdown(f"**Step 8 — Injuries** — _No injury data — click Refresh Injuries in sidebar_")
                     else:
+                        st.markdown(f"**Step 8 — Injuries** → **{s8['adjustment']:+.1f}** pts")
                         _tier_colors = {"Star": "#e74c3c", "Starter": "#e67e22", "Bench": "#95a5a6", "Unknown": "#7f8c8d"}
                         for side_label, side_key in [
                             (h2h_team_a, "injured_out_a"),
                             (h2h_team_b, "injured_out_b"),
                         ]:
                             injured_list = s8.get(side_key, [])
-                            if injured_list:
-                                # Count only players with actual impact
-                                impactful = [p for p in injured_list if p.get("impact_pts", 0) > 0]
-                                st.markdown(f"**{side_label}** — {len(injured_list)} player(s) on report ({len(impactful)} with scoring impact):")
-                                for ip in sorted(injured_list, key=lambda x: x.get("impact_pts", 0), reverse=True):
-                                    tier = ip.get("tier", "Unknown")
-                                    tc = _tier_colors.get(tier, "#95a5a6")
-                                    miss = ip.get("miss_prob", 1.0)
-                                    miss_str = f"{int(miss * 100)}% miss" if miss < 1.0 else ""
-                                    impact = ip.get("impact_pts", 0)
-                                    ret = ip.get("return_date", "")
-                                    ret_str = f" · Return: {ret}" if ret and ret != "Unknown" else ""
-
-                                    st.markdown(
-                                        f'- <span style="color:{tc};font-weight:700;">[{tier}]</span> '
-                                        f"**{ip['name']}** ({ip['status']}) — "
-                                        f"{ip.get('body_part', '—')}/{ip.get('injury', '—')} · "
-                                        f"**{ip['avg_ppg']} PPG** / {ip.get('avg_apg', 0)} APG / "
-                                        f"{ip.get('minutes', 0)} min · "
-                                        f"Impact: **-{impact:.1f} pts**"
-                                        f"{' · ' + miss_str if miss_str else ''}"
-                                        f"{ret_str}",
-                                        unsafe_allow_html=True,
-                                    )
-                            else:
-                                st.markdown(f"**{side_label}** — No players on injury report ✅")
-                        st.markdown(f"Adjustment: **{s8['adjustment']:+.1f}** pts")
+                            if not injured_list:
+                                continue
+                            impactful = [p for p in injured_list if p.get("impact_pts", 0) > 0]
+                            if not impactful:
+                                continue
+                            lines = [f"**{side_label}** ({len(impactful)} with impact):"]
+                            for ip in sorted(impactful, key=lambda x: x.get("impact_pts", 0), reverse=True):
+                                tier = ip.get("tier", "?")
+                                tc = _tier_colors.get(tier, "#95a5a6")
+                                miss = ip.get("miss_prob", 1.0)
+                                miss_str = f" · {int(miss*100)}% miss" if miss < 1.0 else ""
+                                lines.append(
+                                    f'<span style="color:{tc};font-weight:700;">[{tier}]</span> '
+                                    f"**{ip['name']}** ({ip['status']}) — "
+                                    f"**{ip['avg_ppg']} PPG** / {ip.get('avg_apg',0)} APG / {ip.get('minutes',0)} min → "
+                                    f"**-{ip['impact_pts']:.1f} pts**{miss_str}"
+                                )
+                            st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
                     # Final summary
-                    st.markdown("---")
                     f = steps["final"]
-                    st.markdown("**Final Calculation**")
                     st.markdown(
+                        f"**Final** — "
                         f"**{f['base_total']}** (base) "
-                        f"**{f['shooting_adj']:+.1f}** (shooting) "
+                        f"**{f['shooting_adj']:+.1f}** (shoot) "
                         f"**{f['tov_adj']:+.1f}** (TOV) "
                         f"**{f['ft_adj']:+.1f}** (FT) "
                         f"**{f['rest_adj']:+.1f}** (rest) "
                         f"**{f['home_adj']:+.1f}** (home) "
                         f"**{f['form_adj']:+.1f}** (form) "
-                        f"**{f['injury_adj']:+.1f}** (injuries) "
+                        f"**{f['injury_adj']:+.1f}** (inj) "
                         f"= **{f['projected_total']}**"
                     )
 
