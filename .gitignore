@@ -1,3 +1,4 @@
+.DS_Store
 .env
 venv/
 __pycache__/
@@ -11,7 +12,6 @@ mobile/.expo/
 mobile/package-lock.json
 
 # iOS (Xcode)
-ios/.DS_Store
 ios/*.xcodeproj/project.xcworkspace/
 ios/*.xcodeproj/xcuserdata/
 ios/DerivedData/
