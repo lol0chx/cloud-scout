@@ -9,6 +9,7 @@ All functions accept a league parameter (default "NBA") to support
 future multi-sport expansion.
 """
 
+import math
 import unicodedata
 
 import pandas as pd
@@ -384,11 +385,14 @@ def season_standings(df):
     return pd.DataFrame(rows).sort_values("Win%", ascending=False).reset_index(drop=True)
 
 
-def win_probability(team_a, team_b, df, home_team=None):
+def win_probability(team_a, team_b, df, home_team=None, pts_per_logit=6.0):
     """
     Estimate win probability using overall win%, H2H record, and home/away splits.
     Weights: overall 35%, H2H 30%, home/away 35%.
     Returns (prob_a, prob_b, predicted_margin) where margin is from team_a's perspective.
+
+    pts_per_logit scales the log-odds to a point spread.
+    NBA ≈ 6.0 (13 pts ≈ 90% win), MLB ≈ 3.5 (3 runs ≈ 70% win).
     """
     def _win_pct(team):
         tg = df[(df["home_team"] == team) | (df["away_team"] == team)]
@@ -409,14 +413,6 @@ def win_probability(team_a, team_b, df, home_team=None):
         if ag.empty:
             return _win_pct(team)
         return (ag["away_score"] > ag["home_score"]).mean()
-
-    def _avg_margin(team):
-        tg = df[(df["home_team"] == team) | (df["away_team"] == team)]
-        if tg.empty:
-            return 0
-        s = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
-        c = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
-        return (s - c).mean()
 
     h2h = df[
         ((df["home_team"] == team_a) & (df["away_team"] == team_b)) |
@@ -446,7 +442,9 @@ def win_probability(team_a, team_b, df, home_team=None):
     total = score_a + score_b
     prob_a = round(score_a / total * 100, 1) if total > 0 else 50.0
     prob_b = round(100 - prob_a, 1)
-    margin = round(_avg_margin(team_a) - _avg_margin(team_b), 1)
+    # Logit conversion: clamp probabilities to avoid log(0), then scale
+    p = max(min(prob_a / 100, 0.99), 0.01)
+    margin = round(math.log(p / (1 - p)) * pts_per_logit, 1)
     return prob_a, prob_b, margin
 
 
