@@ -768,6 +768,39 @@ with tab_pred:
         else:
             st.info("Pick 'em — no advantage detected.")
 
+    # ── Referee Assignment ────────────────────────────────────────────────────
+    if not IS_MLB and not ref_assign_df.empty and h2h_team_a != h2h_team_b:
+        team_a_parts = [w for w in h2h_team_a.lower().split() if len(w) > 3]
+        team_b_parts = [w for w in h2h_team_b.lower().split() if len(w) > 3]
+        matched = ref_assign_df[
+            ref_assign_df["game_matchup"].str.lower().apply(
+                lambda m: any(w in m for w in team_a_parts) and any(w in m for w in team_b_parts)
+            )
+        ]
+        if not matched.empty:
+            st.markdown("---")
+            st.markdown("#### Tonight's Referee Crew")
+            crew = matched[["referee_name", "role"]].values.tolist()
+            role_order = {"Crew Chief": 0, "Referee": 1, "Umpire": 2}
+            crew.sort(key=lambda x: role_order.get(x[1], 9))
+            cols = st.columns(len(crew))
+            for col, (name, role) in zip(cols, crew):
+                # Look up this ref's stats
+                if not ref_stats_df.empty:
+                    rs = ref_stats_df[ref_stats_df["name"].str.strip().str.lower() == name.strip().lower()]
+                    if rs.empty:
+                        last = name.strip().split()[-1].lower()
+                        rs = ref_stats_df[ref_stats_df["name"].str.strip().str.split().str[-1].str.lower() == last]
+                    if not rs.empty:
+                        r = rs.iloc[0]
+                        ppg = f"{r['total_ppg']:.1f} PPG" if pd.notna(r.get("total_ppg")) else ""
+                        fpg = f"{r['fouls_per_game']:.1f} FPG" if pd.notna(r.get("fouls_per_game")) else ""
+                        col.metric(label=f"{role}", value=name, delta=f"{ppg}  {fpg}".strip())
+                    else:
+                        col.metric(label=f"{role}", value=name)
+                else:
+                    col.metric(label=f"{role}", value=name)
+
     # ── Projected Over/Under Total (NBA only) ────────────────────────────────
     if not IS_MLB and not games_df.empty and h2h_team_a != h2h_team_b:
         players_df_full = load_players(conn)
