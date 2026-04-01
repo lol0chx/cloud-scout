@@ -14,6 +14,48 @@ import unicodedata
 
 import pandas as pd
 
+# ── Team timezone regions (used for travel-aware B2B penalty) ─────────────────
+_TEAM_TZ = {
+    "Atlanta Hawks": "ET", "Boston Celtics": "ET", "Brooklyn Nets": "ET",
+    "Charlotte Hornets": "ET", "Cleveland Cavaliers": "ET", "Detroit Pistons": "ET",
+    "Indiana Pacers": "ET", "Miami Heat": "ET", "New York Knicks": "ET",
+    "Orlando Magic": "ET", "Philadelphia 76ers": "ET", "Toronto Raptors": "ET",
+    "Washington Wizards": "ET",
+    "Chicago Bulls": "CT", "Dallas Mavericks": "CT", "Houston Rockets": "CT",
+    "Memphis Grizzlies": "CT", "Milwaukee Bucks": "CT", "Minnesota Timberwolves": "CT",
+    "New Orleans Pelicans": "CT", "Oklahoma City Thunder": "CT", "San Antonio Spurs": "CT",
+    "Denver Nuggets": "MT", "Phoenix Suns": "MT", "Utah Jazz": "MT",
+    "Golden State Warriors": "PT", "Los Angeles Clippers": "PT", "Los Angeles Lakers": "PT",
+    "Portland Trail Blazers": "PT", "Sacramento Kings": "PT",
+}
+_TZ_ORDER = {"ET": 0, "CT": 1, "MT": 2, "PT": 3}
+
+# ── Altitude advantage for home team ─────────────────────────────────────────
+# Visitor fatigue at altitude inflates late-game scoring; faster pace at home
+_ALTITUDE_ADJ = {
+    "Denver Nuggets": 2.0,   # 5,280 ft — largest altitude effect in NBA
+    "Utah Jazz": 1.0,         # 4,226 ft — noticeable but smaller
+}
+
+# ── Classic NBA rivalries → higher intensity = slight scoring bump ─────────────
+_RIVALRIES = {
+    frozenset({"Los Angeles Lakers", "Boston Celtics"}),
+    frozenset({"Los Angeles Lakers", "Los Angeles Clippers"}),
+    frozenset({"Los Angeles Lakers", "Golden State Warriors"}),
+    frozenset({"Golden State Warriors", "Cleveland Cavaliers"}),
+    frozenset({"Golden State Warriors", "Boston Celtics"}),
+    frozenset({"Chicago Bulls", "Detroit Pistons"}),
+    frozenset({"Miami Heat", "New York Knicks"}),
+    frozenset({"Miami Heat", "Boston Celtics"}),
+    frozenset({"Miami Heat", "Indiana Pacers"}),
+    frozenset({"Boston Celtics", "Philadelphia 76ers"}),
+    frozenset({"Milwaukee Bucks", "Boston Celtics"}),
+    frozenset({"Dallas Mavericks", "Miami Heat"}),
+    frozenset({"Oklahoma City Thunder", "Golden State Warriors"}),
+    frozenset({"Denver Nuggets", "Minnesota Timberwolves"}),
+    frozenset({"New York Knicks", "Brooklyn Nets"}),
+}
+
 
 def _normalize(name):
     """
@@ -1021,21 +1063,46 @@ def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
             return False
         return tg.iloc[0]["away_team"] == team
 
+    def _last_opponent(team, gdf):
+        """Return the opponent in a team's most recent game."""
+        tg = gdf[(gdf["home_team"] == team) | (gdf["away_team"] == team)]
+        tg = tg.sort_values("date", ascending=False)
+        if tg.empty:
+            return None
+        row = tg.iloc[0]
+        return row["home_team"] if row["away_team"] == team else row["away_team"]
+
     def _rest_value(info, team, is_home_today):
         if not info:
             return 0.0, ""
         d = info["rest_days"]
         if d <= 0:
-            # Back-to-back: road B2B is worse than home B2B
             away_last = _was_away_last(team, games_df)
+            # Base B2B penalty by road context
             if away_last and not is_home_today:
-                return -3.0, "road B2B"     # worst: away→away
+                base, note = -3.0, "road B2B"
             elif away_last:
-                return -2.5, "away→home B2B" # traveled yesterday, home today
+                base, note = -2.5, "away→home B2B"
             elif not is_home_today:
-                return -2.5, "home→road B2B" # rested at home, travel today
+                base, note = -2.5, "home→road B2B"
             else:
-                return -1.5, "home B2B"      # best case: back-to-back at home
+                base, note = -1.5, "home B2B"
+            # Timezone crossing penalty on B2B
+            last_opp = _last_opponent(team, games_df)
+            if last_opp:
+                team_tz = _TEAM_TZ.get(team, "ET")
+                opp_tz = _TEAM_TZ.get(last_opp, "ET")
+                zones = abs(_TZ_ORDER.get(team_tz, 0) - _TZ_ORDER.get(opp_tz, 0))
+                if zones >= 3:
+                    base -= 1.5
+                    note += " + coast-to-coast"
+                elif zones == 2:
+                    base -= 0.75
+                    note += " + 2-zone travel"
+                elif zones == 1:
+                    base -= 0.25
+                    note += " + 1-zone travel"
+            return base, note
         if d == 1:
             return 0.0, "normal"
         if d == 2:
@@ -1066,16 +1133,12 @@ def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
     # Denver (5,280 ft) and Utah (4,226 ft) get an altitude bonus:
     # visiting teams fatigue faster at elevation, increasing pace and sloppiness.
     # Denver home games avg ~3-4 pts higher totals than neutral, Utah ~1-2.
-    _ALTITUDE_TEAMS = {
-        "Denver Nuggets": 2.0,    # 5,280 ft — biggest effect
-        "Utah Jazz": 1.0,         # 4,226 ft — moderate effect
-    }
     home_adj = 0.0
     altitude_adj = 0.0
     altitude_team = None
     if home_team:
         home_adj = 1.5
-        altitude_adj = _ALTITUDE_TEAMS.get(home_team, 0.0)
+        altitude_adj = _ALTITUDE_ADJ.get(home_team, 0.0)
         if altitude_adj:
             altitude_team = home_team
 
@@ -1404,7 +1467,12 @@ def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
 
     mot_a, mot_label_a = _team_context(team_a, games_df)
     mot_b, mot_label_b = _team_context(team_b, games_df)
-    motivation_adj = round(mot_a + mot_b, 1)
+
+    # Rivalry boost: both teams elevate intensity → games trend slightly higher
+    is_rivalry = frozenset({team_a, team_b}) in _RIVALRIES
+    rivalry_adj = 1.0 if is_rivalry else 0.0
+
+    motivation_adj = round(mot_a + mot_b + rivalry_adj, 1)
 
     steps["step_11_motivation"] = {
         "label": "Schedule Spot / Motivation",
@@ -1412,6 +1480,8 @@ def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
         "team_b_context": mot_label_b,
         "motivation_a": mot_a,
         "motivation_b": mot_b,
+        "is_rivalry": is_rivalry,
+        "rivalry_adj": rivalry_adj,
         "adjustment": motivation_adj,
     }
 
