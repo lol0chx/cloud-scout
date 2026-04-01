@@ -877,22 +877,28 @@ def league_averages(players_df):
     tov_rate = round(tov / (fga + 0.44 * fta + tov) * 100, 1) if (fga + fta + tov) > 0 else 13.0
     ft_rate = round(fta / fga * 100, 1) if fga > 0 else 25.0
 
-    return {"efg_pct": efg, "tov_rate": tov_rate, "ft_rate": ft_rate}
+    oreb = players_df["off_rebounds"].dropna().sum()
+    dreb = players_df["def_rebounds"].dropna().sum()
+    oreb_pct = round(oreb / (oreb + dreb) * 100, 1) if (oreb + dreb) > 0 else 23.0
+
+    return {"efg_pct": efg, "tov_rate": tov_rate, "ft_rate": ft_rate, "oreb_pct": oreb_pct}
 
 
 def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
                      injuries_df=None, referee_stats_df=None, referee_assignments_df=None):
     """
-    Project the over/under game total using a 9-step model:
-    1. Pace-based base total (possessions x combined offensive ratings)
+    Project the over/under game total using an 11-step model:
+    1. Pace-based base total (pace-push weighted possessions x ORtgs)
     2. Shooting adjustment (matchup eFG% vs league average)
     3. Turnover adjustment (combined TOV% deviation)
     4. Free throw adjustment (combined FT rate deviation)
-    5. Rest adjustment (back-to-back penalties, extra rest bonuses)
-    6. Home court adjustment (+1.5 if not neutral)
+    5. Rest & travel adjustment (road B2B, front/back end, travel context)
+    6. Home court & altitude (Denver/Utah elevation bonus)
     7. Recent form adjustment (last N ORtg vs season ORtg)
     8. Injury adjustment (missing key players reduce projected total)
     9. Referee adjustment (assigned refs' historical total PPG vs league avg)
+    10. Rebounding / second chances (OREB% vs league average)
+    11. Schedule spot / motivation (tanking, playoff push, etc.)
 
     Returns a detailed dict with every intermediate value for each step.
     """
@@ -912,8 +918,15 @@ def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
     if not all([pace_a_val, pace_b_val, ortg_a, ortg_b, drtg_a, drtg_b]):
         return {"error": "Not enough game data — scrape more games first."}
 
-    # ── Step 1: Base Total ──
-    expected_poss = (pace_a_val + pace_b_val) / 2
+    # ── Step 1: Base Total (with pace-push context) ──
+    # Instead of simple average, weight toward the faster team.
+    # "Pace pushers" drag opponents up — the faster team has more
+    # control over tempo than the slower team can resist.
+    # Weight: 60% faster team's pace, 40% slower team's pace.
+    if pace_a_val >= pace_b_val:
+        expected_poss = pace_a_val * 0.6 + pace_b_val * 0.4
+    else:
+        expected_poss = pace_b_val * 0.6 + pace_a_val * 0.4
     exp_ortg_a = (ortg_a + drtg_b) / 2
     exp_ortg_b = (ortg_b + drtg_a) / 2
     base_total = expected_poss * (exp_ortg_a + exp_ortg_b) / 100
@@ -922,6 +935,7 @@ def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
         "label": "Base Total",
         "pace_a": pace_a_val, "pace_b": pace_b_val,
         "expected_possessions": round(expected_poss, 1),
+        "pace_push": "A" if pace_a_val >= pace_b_val else "B",
         "ortg_a": ortg_a, "drtg_a": drtg_a,
         "ortg_b": ortg_b, "drtg_b": drtg_b,
         "exp_ortg_a": round(exp_ortg_a, 1),
@@ -993,44 +1007,86 @@ def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
     else:
         steps["step_4_free_throws"] = {"label": "Free Throw Adjustment", "skipped": True, "adjustment": 0.0}
 
-    # ── Step 5: Rest Adjustment ──
+    # ── Step 5: Rest & Travel Adjustment ──
+    # Enhanced B2B: back end of a B2B on the road is worse than at home.
+    # Travel penalty if the previous game was away and this one is also away.
     rest_a_info = rest_days(team_a, games_df)
     rest_b_info = rest_days(team_b, games_df)
 
-    def _rest_value(info):
+    def _was_away_last(team, gdf):
+        """Check if team's most recent game was on the road."""
+        tg = gdf[(gdf["home_team"] == team) | (gdf["away_team"] == team)]
+        tg = tg.sort_values("date", ascending=False)
+        if tg.empty:
+            return False
+        return tg.iloc[0]["away_team"] == team
+
+    def _rest_value(info, team, is_home_today):
         if not info:
-            return 0.0
+            return 0.0, ""
         d = info["rest_days"]
         if d <= 0:
-            return -2.0   # back-to-back
+            # Back-to-back: road B2B is worse than home B2B
+            away_last = _was_away_last(team, games_df)
+            if away_last and not is_home_today:
+                return -3.0, "road B2B"     # worst: away→away
+            elif away_last:
+                return -2.5, "away→home B2B" # traveled yesterday, home today
+            elif not is_home_today:
+                return -2.5, "home→road B2B" # rested at home, travel today
+            else:
+                return -1.5, "home B2B"      # best case: back-to-back at home
         if d == 1:
-            return 0.0    # normal rest
+            return 0.0, "normal"
         if d == 2:
-            return 0.5
-        return 1.0        # 3+ days rest
+            return 0.5, "extra rest"
+        return 1.0, "extended rest"
 
-    rv_a = _rest_value(rest_a_info)
-    rv_b = _rest_value(rest_b_info)
+    is_home_a = home_team == team_a
+    is_home_b = home_team == team_b
+    rv_a, rest_note_a = _rest_value(rest_a_info, team_a, is_home_a)
+    rv_b, rest_note_b = _rest_value(rest_b_info, team_b, is_home_b)
     rest_adj = rv_a + rv_b
 
     steps["step_5_rest"] = {
-        "label": "Rest Adjustment",
+        "label": "Rest & Travel Adjustment",
         "rest_days_a": rest_a_info["rest_days"] if rest_a_info else None,
         "rest_days_b": rest_b_info["rest_days"] if rest_b_info else None,
         "b2b_a": rest_a_info.get("back_to_back") if rest_a_info else None,
         "b2b_b": rest_b_info.get("back_to_back") if rest_b_info else None,
+        "rest_note_a": rest_note_a,
+        "rest_note_b": rest_note_b,
         "rest_value_a": rv_a,
         "rest_value_b": rv_b,
         "adjustment": rest_adj,
     }
 
-    # ── Step 6: Home Court ──
-    home_adj = 1.5 if home_team else 0.0
-    steps["step_6_home_court"] = {
-        "label": "Home Court",
-        "home_team": home_team or "Neutral",
-        "adjustment": home_adj,
+    # ── Step 6: Home Court & Altitude ──
+    # Standard home court edge is ~1.5 pts on the total.
+    # Denver (5,280 ft) and Utah (4,226 ft) get an altitude bonus:
+    # visiting teams fatigue faster at elevation, increasing pace and sloppiness.
+    # Denver home games avg ~3-4 pts higher totals than neutral, Utah ~1-2.
+    _ALTITUDE_TEAMS = {
+        "Denver Nuggets": 2.0,    # 5,280 ft — biggest effect
+        "Utah Jazz": 1.0,         # 4,226 ft — moderate effect
     }
+    home_adj = 0.0
+    altitude_adj = 0.0
+    altitude_team = None
+    if home_team:
+        home_adj = 1.5
+        altitude_adj = _ALTITUDE_TEAMS.get(home_team, 0.0)
+        if altitude_adj:
+            altitude_team = home_team
+
+    steps["step_6_home_court"] = {
+        "label": "Home Court & Altitude",
+        "home_team": home_team or "Neutral",
+        "altitude_team": altitude_team,
+        "altitude_adj": altitude_adj,
+        "adjustment": home_adj + altitude_adj,
+    }
+    home_adj = home_adj + altitude_adj
 
     # ── Step 7: Recent Form ──
     season_ortg_a = offensive_rating(team_a, games_df, players_df, n=82)
@@ -1298,8 +1354,73 @@ def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
 
     steps["step_9_referees"] = step_9
 
+    # ── Step 10: Rebounding / Second Chances ──
+    # High OREB% teams get extra possessions → more scoring opportunities.
+    # Each 1% above league avg OREB% ≈ 0.3-0.5 extra pts (extra shot attempts).
+    oreb_a = shooting_a.get("oreb_pct") if shooting_a else None
+    oreb_b = shooting_b.get("oreb_pct") if shooting_b else None
+    oreb_adj = 0.0
+    if oreb_a is not None and oreb_b is not None:
+        oreb_dev_a = oreb_a - lg["oreb_pct"]
+        oreb_dev_b = oreb_b - lg["oreb_pct"]
+        oreb_adj = round((oreb_dev_a + oreb_dev_b) * 0.4, 1)
+        # Cap at ±3 pts
+        oreb_adj = max(min(oreb_adj, 3.0), -3.0)
+        steps["step_10_rebounds"] = {
+            "label": "Rebounding / Second Chances",
+            "oreb_pct_a": oreb_a, "oreb_pct_b": oreb_b,
+            "league_avg_oreb": lg["oreb_pct"],
+            "oreb_dev_a": round(oreb_dev_a, 1),
+            "oreb_dev_b": round(oreb_dev_b, 1),
+            "adjustment": oreb_adj,
+        }
+    else:
+        steps["step_10_rebounds"] = {"label": "Rebounding / Second Chances",
+                                      "skipped": True, "adjustment": 0.0}
+
+    # ── Step 11: Schedule Spot / Motivation ──
+    # Teams with nothing to play for (eliminated / locked seed) or tanking
+    # play with less intensity. Rivalry and playoff-contention games trend higher.
+    def _team_context(team, gdf):
+        """Estimate motivation from win% and season timing."""
+        tg = gdf[(gdf["home_team"] == team) | (gdf["away_team"] == team)]
+        if tg.empty:
+            return 0.0, "unknown"
+        s = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
+        c = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
+        win_pct = (s.values > c.values).mean()
+        games_played = len(tg)
+
+        # Late season = after game 65 (of 82)
+        late_season = games_played >= 65
+
+        if win_pct < 0.30 and late_season:
+            return -1.5, "tank"           # likely tanking, lower intensity
+        if win_pct < 0.30:
+            return -0.5, "struggling"     # bad team, slightly lower totals
+        if 0.45 <= win_pct <= 0.55 and late_season:
+            return 0.5, "playoff push"    # fighting for a spot, high intensity
+        return 0.0, "normal"
+
+    mot_a, mot_label_a = _team_context(team_a, games_df)
+    mot_b, mot_label_b = _team_context(team_b, games_df)
+    motivation_adj = round(mot_a + mot_b, 1)
+
+    steps["step_11_motivation"] = {
+        "label": "Schedule Spot / Motivation",
+        "team_a_context": mot_label_a,
+        "team_b_context": mot_label_b,
+        "motivation_a": mot_a,
+        "motivation_b": mot_b,
+        "adjustment": motivation_adj,
+    }
+
     # ── Final Projected Total ──
-    projected = round(base_total + shooting_adj + tov_adj + ft_adj + rest_adj + home_adj + form_adj + injury_adj + ref_adj, 1)
+    projected = round(
+        base_total + shooting_adj + tov_adj + ft_adj + rest_adj
+        + home_adj + form_adj + injury_adj + ref_adj
+        + oreb_adj + motivation_adj, 1
+    )
 
     steps["final"] = {
         "base_total": round(base_total, 1),
@@ -1311,6 +1432,8 @@ def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
         "form_adj": form_adj,
         "injury_adj": injury_adj,
         "ref_adj": ref_adj,
+        "oreb_adj": oreb_adj,
+        "motivation_adj": motivation_adj,
         "projected_total": projected,
     }
 
