@@ -942,10 +942,12 @@ with tab_pred:
 
                     # Step 11 — Motivation
                     s11 = steps["step_11_motivation"]
+                    rivalry_str = " · 🔥 Rivalry game (+1.0)" if s11.get("is_rivalry") else ""
                     st.markdown(
                         f"**Step 11 — Motivation** — "
                         f"{h2h_team_a}: _{s11['team_a_context']}_ | "
-                        f"{h2h_team_b}: _{s11['team_b_context']}_ → "
+                        f"{h2h_team_b}: _{s11['team_b_context']}_"
+                        f"{rivalry_str} → "
                         f"**{s11['adjustment']:+.1f}** pts"
                     )
 
