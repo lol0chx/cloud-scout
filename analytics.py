@@ -881,9 +881,9 @@ def league_averages(players_df):
 
 
 def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
-                     injuries_df=None):
+                     injuries_df=None, referee_stats_df=None, referee_assignments_df=None):
     """
-    Project the over/under game total using an 8-step model:
+    Project the over/under game total using a 9-step model:
     1. Pace-based base total (possessions x combined offensive ratings)
     2. Shooting adjustment (matchup eFG% vs league average)
     3. Turnover adjustment (combined TOV% deviation)
@@ -892,6 +892,7 @@ def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
     6. Home court adjustment (+1.5 if not neutral)
     7. Recent form adjustment (last N ORtg vs season ORtg)
     8. Injury adjustment (missing key players reduce projected total)
+    9. Referee adjustment (assigned refs' historical total PPG vs league avg)
 
     Returns a detailed dict with every intermediate value for each step.
     """
@@ -1235,8 +1236,70 @@ def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
 
     steps["step_8_injuries"] = step_8
 
+    # ── Step 9: Referee Adjustment ──
+    ref_adj = 0.0
+    step_9 = {"label": "Referee Adjustment"}
+    if (referee_stats_df is not None and not referee_stats_df.empty
+            and referee_assignments_df is not None and not referee_assignments_df.empty):
+        # Find tonight's matchup row(s) that contain either team name
+        team_a_parts = team_a.lower().split()
+        team_b_parts = team_b.lower().split()
+        matched_refs = []
+        for _, arow in referee_assignments_df.iterrows():
+            matchup_lower = arow["game_matchup"].lower()
+            # Match if any word from both team names appears (e.g. "Dallas @ Milwaukee")
+            a_match = any(w in matchup_lower for w in team_a_parts if len(w) > 3)
+            b_match = any(w in matchup_lower for w in team_b_parts if len(w) > 3)
+            if a_match and b_match:
+                matched_refs.append(arow["referee_name"])
+
+        if matched_refs:
+            # League avg total PPG from all refs
+            valid_stats = referee_stats_df.dropna(subset=["total_ppg"])
+            if not valid_stats.empty:
+                league_avg_ppg = valid_stats["total_ppg"].mean()
+                ref_details = []
+                for ref_name in matched_refs:
+                    # Fuzzy match: strip whitespace and compare lowercase
+                    ref_row = valid_stats[valid_stats["name"].str.strip().str.lower() == ref_name.strip().lower()]
+                    if ref_row.empty:
+                        # Try last-name match
+                        last = ref_name.strip().split()[-1].lower()
+                        ref_row = valid_stats[valid_stats["name"].str.strip().str.split().str[-1].str.lower() == last]
+                    if not ref_row.empty:
+                        r = ref_row.iloc[0]
+                        ref_details.append({
+                            "name": ref_name,
+                            "total_ppg": round(r["total_ppg"], 1),
+                            "fouls_pg": round(r["fouls_per_game"], 1) if pd.notna(r.get("fouls_per_game")) else None,
+                            "games": int(r["games_officiated"]) if pd.notna(r.get("games_officiated")) else None,
+                            "delta": round(r["total_ppg"] - league_avg_ppg, 1),
+                        })
+
+                if ref_details:
+                    avg_delta = sum(r["delta"] for r in ref_details) / len(ref_details)
+                    # Scale: 50% of the raw delta (refs influence but don't control scoring)
+                    ref_adj = round(avg_delta * 0.5, 1)
+                    # Cap at +/- 4 pts
+                    ref_adj = max(min(ref_adj, 4.0), -4.0)
+                    step_9.update({
+                        "league_avg_ppg": round(league_avg_ppg, 1),
+                        "refs": ref_details,
+                        "adjustment": ref_adj,
+                    })
+                else:
+                    step_9.update({"skipped": True, "reason": "Assigned refs not found in stats", "adjustment": 0.0})
+            else:
+                step_9.update({"skipped": True, "reason": "No referee stats available", "adjustment": 0.0})
+        else:
+            step_9.update({"skipped": True, "reason": "No ref assignment found for this matchup", "adjustment": 0.0})
+    else:
+        step_9.update({"skipped": True, "reason": "No referee data — click Refresh Referees in sidebar", "adjustment": 0.0})
+
+    steps["step_9_referees"] = step_9
+
     # ── Final Projected Total ──
-    projected = round(base_total + shooting_adj + tov_adj + ft_adj + rest_adj + home_adj + form_adj + injury_adj, 1)
+    projected = round(base_total + shooting_adj + tov_adj + ft_adj + rest_adj + home_adj + form_adj + injury_adj + ref_adj, 1)
 
     steps["final"] = {
         "base_total": round(base_total, 1),
@@ -1247,6 +1310,7 @@ def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
         "home_adj": home_adj,
         "form_adj": form_adj,
         "injury_adj": injury_adj,
+        "ref_adj": ref_adj,
         "projected_total": projected,
     }
 
