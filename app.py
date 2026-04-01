@@ -12,8 +12,8 @@ import streamlit as st
 import pandas as pd
 from nba_api.stats.static import teams as nba_teams
 
-from database import init_db, load_games, load_players, load_mlb_players, load_injuries
-from scraper import scrape_team, scrape_injuries, fetch_todays_games, fetch_starters
+from database import init_db, load_games, load_players, load_mlb_players, load_injuries, load_referee_stats, load_referee_assignments
+from scraper import scrape_team, scrape_injuries, fetch_todays_games, fetch_starters, scrape_referees
 from mlb_scraper import scrape_mlb_team, get_all_mlb_teams, DEFAULT_SEASON as MLB_DEFAULT_SEASON
 from analytics import (
     last_n_avg,
@@ -143,6 +143,27 @@ if not injuries_df.empty:
     st.sidebar.caption(f"{len(injuries_df)} players on report ({out_count} Out/Doubtful)")
 else:
     st.sidebar.caption("No injury data — click Refresh to fetch.")
+
+# ── Sidebar: Referee Data ────────────────────────────────────────────────────
+if not IS_MLB:
+    st.sidebar.divider()
+    st.sidebar.header("Referee Data")
+    if st.sidebar.button("Refresh Referees"):
+        with st.sidebar.status("Fetching referee stats & assignments...", expanded=True):
+            stats_n, assign_n = scrape_referees()
+            st.sidebar.success(f"Updated {stats_n} ref stats, {assign_n} assignments.")
+        conn.close()
+        conn = init_db()
+
+    ref_stats_df = load_referee_stats(conn)
+    ref_assign_df = load_referee_assignments(conn)
+    if not ref_stats_df.empty:
+        st.sidebar.caption(f"{len(ref_stats_df)} referees tracked, {len(ref_assign_df)} assignments today")
+    else:
+        st.sidebar.caption("No referee data — click Refresh to fetch.")
+else:
+    ref_stats_df = pd.DataFrame()
+    ref_assign_df = pd.DataFrame()
 
 st.sidebar.divider()
 
@@ -757,6 +778,8 @@ with tab_pred:
                 h2h_team_a, h2h_team_b, games_df, players_df_full,
                 home_team=home_team_val if 'home_team_val' in dir() else None, n=10,
                 injuries_df=injuries_df,
+                referee_stats_df=ref_stats_df,
+                referee_assignments_df=ref_assign_df,
             )
             if "error" in proj:
                 st.warning(proj["error"])
@@ -888,6 +911,23 @@ with tab_pred:
                                 )
                             st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
+                    # Step 9 — Referees
+                    s9 = steps["step_9_referees"]
+                    if s9.get("skipped"):
+                        st.markdown(f"**Step 9 — Referees** — _{s9.get('reason', 'No data')}_")
+                    else:
+                        ref_lines = [
+                            f"**Step 9 — Referees** (lg avg {s9['league_avg_ppg']} PPG) → **{s9['adjustment']:+.1f}** pts"
+                        ]
+                        for r in s9.get("refs", []):
+                            fpg = f" · {r['fouls_pg']} FPG" if r.get("fouls_pg") else ""
+                            games = f" · {r['games']}G" if r.get("games") else ""
+                            ref_lines.append(
+                                f"**{r['name']}** — **{r['total_ppg']} PPG** "
+                                f"(Δ **{r['delta']:+.1f}**){fpg}{games}"
+                            )
+                        st.markdown("<br>".join(ref_lines), unsafe_allow_html=True)
+
                     # Final summary
                     f = steps["final"]
                     st.markdown(
@@ -900,6 +940,7 @@ with tab_pred:
                         f"**{f['home_adj']:+.1f}** (home) "
                         f"**{f['form_adj']:+.1f}** (form) "
                         f"**{f['injury_adj']:+.1f}** (inj) "
+                        f"**{f['ref_adj']:+.1f}** (ref) "
                         f"= **{f['projected_total']}**"
                     )
 

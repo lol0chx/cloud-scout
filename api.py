@@ -29,7 +29,7 @@ from analytics import (
     win_probability,
     win_streak,
 )
-from database import init_db, load_games, load_mlb_players, load_players, load_injuries
+from database import init_db, load_games, load_mlb_players, load_players, load_injuries, load_referee_stats, load_referee_assignments
 from mlb_analytics import (
     mlb_batter_avg,
     mlb_batter_vs_team,
@@ -39,7 +39,7 @@ from mlb_analytics import (
 )
 from mlb_scraper import DEFAULT_SEASON as MLB_DEFAULT_SEASON
 from mlb_scraper import get_all_mlb_teams, scrape_mlb_team
-from scraper import scrape_team, scrape_injuries, fetch_todays_games, fetch_starters
+from scraper import scrape_team, scrape_injuries, fetch_todays_games, fetch_starters, scrape_referees
 
 app = FastAPI(title="CloudScout API", version="1.0.0")
 
@@ -229,20 +229,24 @@ def get_h2h_advanced(team_a: str, team_b: str, league: str = "NBA", n: int = 10)
 @app.get("/predict/total")
 def get_projected_total(team_a: str, team_b: str, home: str = "", n: int = 10):
     """
-    8-step projected over/under total with full step-by-step breakdown.
-    Includes injury adjustment when injury data is available.
+    9-step projected over/under total with full step-by-step breakdown.
+    Includes injury and referee adjustments when data is available.
     """
     conn = _conn()
     try:
         games_df = load_games(conn, league="NBA")
         players_df = load_players(conn)
         injuries_df = load_injuries(conn, league="NBA")
+        ref_stats_df = load_referee_stats(conn)
+        ref_assign_df = load_referee_assignments(conn)
         if games_df.empty:
             raise HTTPException(404, "No games in database")
         home_team = home if home in [team_a, team_b] else None
         result = projected_total(team_a, team_b, games_df, players_df,
                                   home_team=home_team, n=n,
-                                  injuries_df=injuries_df)
+                                  injuries_df=injuries_df,
+                                  referee_stats_df=ref_stats_df,
+                                  referee_assignments_df=ref_assign_df)
         if "error" in result:
             raise HTTPException(404, result["error"])
         return result
@@ -431,6 +435,35 @@ def get_game_starters(game_id: str):
     if not result.get("home") and not result.get("away"):
         raise HTTPException(404, "Starters not yet available — game may not have started")
     return result
+
+
+# ── Referees ──────────────────────────────────────────────────────────────────
+
+@app.post("/referees/refresh")
+def refresh_referees():
+    """Fetch latest referee stats and today's assignments."""
+    stats_count, assign_count = scrape_referees()
+    return {"stats_updated": stats_count, "assignments_updated": assign_count}
+
+
+@app.get("/referees/stats")
+def get_referee_stats():
+    """Get all referee season stats."""
+    conn = _conn()
+    try:
+        return _to_json(load_referee_stats(conn))
+    finally:
+        conn.close()
+
+
+@app.get("/referees/assignments")
+def get_referee_assignments(date: str = ""):
+    """Get referee assignments, optionally filtered by date (YYYY-MM-DD)."""
+    conn = _conn()
+    try:
+        return _to_json(load_referee_assignments(conn, date=date or None))
+    finally:
+        conn.close()
 
 
 # ── AI Chat ───────────────────────────────────────────────────────────────────
