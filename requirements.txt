@@ -6,3 +6,4 @@ streamlit
 anthropic
 fastapi
 uvicorn[standard]
+beautifulsoup4
