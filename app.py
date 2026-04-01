@@ -845,25 +845,25 @@ with tab_pred:
                             f"**{s4['adjustment']:+.1f}** pts"
                         )
 
-                    # Step 5 — Rest
+                    # Step 5 — Rest & Travel
                     s5 = steps["step_5_rest"]
                     rest_a_str = f"{s5['rest_days_a']}d" if s5['rest_days_a'] is not None else "?"
                     rest_b_str = f"{s5['rest_days_b']}d" if s5['rest_days_b'] is not None else "?"
-                    if s5.get("b2b_a"):
-                        rest_a_str += " (B2B)"
-                    if s5.get("b2b_b"):
-                        rest_b_str += " (B2B)"
+                    note_a = f" ({s5['rest_note_a']})" if s5.get("rest_note_a") else ""
+                    note_b = f" ({s5['rest_note_b']})" if s5.get("rest_note_b") else ""
                     st.markdown(
-                        f"**Step 5 — Rest** — "
-                        f"{h2h_team_a} **{rest_a_str}** | {h2h_team_b} **{rest_b_str}** → "
+                        f"**Step 5 — Rest & Travel** — "
+                        f"{h2h_team_a} **{rest_a_str}**{note_a} | "
+                        f"{h2h_team_b} **{rest_b_str}**{note_b} → "
                         f"**{s5['adjustment']:+.1f}** pts"
                     )
 
-                    # Step 6 — Home Court
+                    # Step 6 — Home Court & Altitude
                     s6 = steps["step_6_home_court"]
+                    alt_str = f" (altitude +{s6['altitude_adj']})" if s6.get("altitude_adj") else ""
                     st.markdown(
                         f"**Step 6 — Home Court** — "
-                        f"**{s6['home_team']}** → **{s6['adjustment']:+.1f}** pts"
+                        f"**{s6['home_team']}**{alt_str} → **{s6['adjustment']:+.1f}** pts"
                     )
 
                     # Step 7 — Recent Form
@@ -928,6 +928,27 @@ with tab_pred:
                             )
                         st.markdown("<br>".join(ref_lines), unsafe_allow_html=True)
 
+                    # Step 10 — Rebounds
+                    s10 = steps["step_10_rebounds"]
+                    if s10.get("skipped"):
+                        st.markdown("**Step 10 — Rebounds** — _Skipped_")
+                    else:
+                        st.markdown(
+                            f"**Step 10 — Rebounds** — "
+                            f"OREB%: **{s10['oreb_pct_a']}%** / **{s10['oreb_pct_b']}%** "
+                            f"(lg avg {s10['league_avg_oreb']}%) → "
+                            f"**{s10['adjustment']:+.1f}** pts"
+                        )
+
+                    # Step 11 — Motivation
+                    s11 = steps["step_11_motivation"]
+                    st.markdown(
+                        f"**Step 11 — Motivation** — "
+                        f"{h2h_team_a}: _{s11['team_a_context']}_ | "
+                        f"{h2h_team_b}: _{s11['team_b_context']}_ → "
+                        f"**{s11['adjustment']:+.1f}** pts"
+                    )
+
                     # Final summary
                     f = steps["final"]
                     st.markdown(
@@ -941,6 +962,8 @@ with tab_pred:
                         f"**{f['form_adj']:+.1f}** (form) "
                         f"**{f['injury_adj']:+.1f}** (inj) "
                         f"**{f['ref_adj']:+.1f}** (ref) "
+                        f"**{f['oreb_adj']:+.1f}** (reb) "
+                        f"**{f['motivation_adj']:+.1f}** (mot) "
                         f"= **{f['projected_total']}**"
                     )
 
