@@ -22,6 +22,8 @@ from nba_api.stats.endpoints import TeamGameLog, BoxScoreTraditionalV3
 from database import (
     init_db, game_exists, insert_game, insert_players,
     clear_injuries, upsert_injuries,
+    clear_referee_stats, upsert_referee_stats,
+    clear_referee_assignments, upsert_referee_assignments,
 )
 
 # Configuration constants
@@ -543,3 +545,140 @@ def fetch_starters(game_id):
         result[f"{side}_team"] = team_name
 
     return result
+
+
+# ── Referee Data ──────────────────────────────────────────────────────────────
+
+def fetch_referee_stats():
+    """
+    Scrape referee season stats from NBAStuffer.
+    Returns list of dicts with name, games_officiated, total_ppg, fouls_per_game, home_win_pct.
+    """
+    from bs4 import BeautifulSoup
+    url = "https://www.nbastuffer.com/2025-2026-nba-referee-stats/"
+    try:
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"Failed to fetch referee stats: {e}")
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    table = soup.find("table", id="tablepress-149")
+    if not table:
+        # fallback: try any table with enough columns
+        table = soup.find("table")
+    if not table:
+        print("No referee stats table found")
+        return []
+
+    rows = table.find("tbody").find_all("tr") if table.find("tbody") else []
+    now = datetime.now().isoformat()
+    refs = []
+    for row in rows:
+        cells = [td.get_text(strip=True) for td in row.find_all("td")]
+        if len(cells) < 10:
+            continue
+        try:
+            refs.append({
+                "name": cells[1],
+                "games_officiated": int(cells[5]) if cells[5] else None,
+                "home_win_pct": _safe_float(cells[6]),
+                "total_ppg": _safe_float(cells[8]),
+                "fouls_per_game": _safe_float(cells[9]),
+                "last_updated": now,
+            })
+        except (ValueError, IndexError):
+            continue
+    return refs
+
+
+def _safe_float(val):
+    """Parse a float from a string, stripping % signs and commas."""
+    if not val:
+        return None
+    try:
+        return float(val.replace("%", "").replace(",", "").strip())
+    except ValueError:
+        return None
+
+
+def fetch_referee_assignments():
+    """
+    Scrape today's referee assignments from official.nba.com.
+    Returns list of dicts with game_matchup, referee_name, role, assignment_date.
+    """
+    from bs4 import BeautifulSoup
+    url = "https://official.nba.com/referee-assignments/"
+    try:
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"Failed to fetch referee assignments: {e}")
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Find assignment date from the page
+    date_el = soup.find("div", class_="entry-meta") or soup.find("time")
+    if date_el:
+        date_text = date_el.get_text(strip=True)
+        try:
+            assignment_date = datetime.strptime(date_text, "%B %d, %Y").strftime("%Y-%m-%d")
+        except ValueError:
+            assignment_date = datetime.now().strftime("%Y-%m-%d")
+    else:
+        assignment_date = datetime.now().strftime("%Y-%m-%d")
+
+    # Find the NBA table (first table on the page)
+    table = soup.find("table")
+    if not table:
+        print("No referee assignments table found")
+        return []
+
+    rows = table.find("tbody").find_all("tr") if table.find("tbody") else table.find_all("tr")[1:]
+    assignments = []
+    for row in rows:
+        cells = [td.get_text(strip=True) for td in row.find_all("td")]
+        if len(cells) < 4:
+            continue
+        matchup = cells[0].strip()
+        if not matchup:
+            continue
+        roles = ["Crew Chief", "Referee", "Umpire"]
+        for i, role in enumerate(roles):
+            name = cells[i + 1].strip() if i + 1 < len(cells) else ""
+            # Strip jersey number like "Kevin Scott (#24)" → "Kevin Scott"
+            if "(" in name:
+                name = name[:name.index("(")].strip()
+            if name:
+                assignments.append({
+                    "game_matchup": matchup,
+                    "referee_name": name,
+                    "role": role,
+                    "assignment_date": assignment_date,
+                })
+    return assignments
+
+
+def scrape_referees():
+    """
+    Fetch referee stats and today's assignments, save to database.
+    Returns (stats_count, assignments_count).
+    """
+    conn = init_db()
+
+    stats = fetch_referee_stats()
+    if stats:
+        clear_referee_stats(conn)
+        upsert_referee_stats(conn, stats)
+        print(f"Saved {len(stats)} referee stat records.")
+
+    assignments = fetch_referee_assignments()
+    if assignments:
+        clear_referee_assignments(conn)
+        upsert_referee_assignments(conn, assignments)
+        print(f"Saved {len(assignments)} referee assignments.")
+
+    conn.close()
+    return len(stats), len(assignments)
