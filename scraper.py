@@ -595,11 +595,15 @@ def fetch_referee_stats():
 
 def _safe_float(val):
     """Parse a float from a string, stripping % signs and commas."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
     if not val:
         return None
     try:
-        return float(val.replace("%", "").replace(",", "").strip())
-    except ValueError:
+        return float(str(val).replace("%", "").replace(",", "").strip())
+    except (ValueError, AttributeError):
         return None
 
 
