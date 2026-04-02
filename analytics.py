@@ -589,7 +589,7 @@ def estimate_possessions(team_score, opp_score, team_players_df=None):
     return (team_score + opp_score) / 2.2
 
 
-def team_pace(team, games_df, players_df, n=10):
+def team_pace(team, games_df, players_df, n=10, decay=1.0):
     """
     Calculate a team's pace (estimated possessions per 48 minutes) over
     the last N games. Uses player-level shot/turnover data when available.
@@ -599,6 +599,8 @@ def team_pace(team, games_df, players_df, n=10):
         games_df: DataFrame of games
         players_df: DataFrame of player stats
         n: number of recent games to use (default 10)
+        decay: exponential decay factor per game (1.0 = equal weight,
+               0.85 = each older game weighted 15% less than the next)
 
     Returns:
         dict with keys: pace, possessions_per_game, games_used
@@ -611,27 +613,26 @@ def team_pace(team, games_df, players_df, n=10):
     if team_games.empty:
         return None
 
-    poss_list = []
-    for _, g in team_games.iterrows():
+    weighted_poss, total_weight = 0.0, 0.0
+    for i, (_, g) in enumerate(team_games.iterrows()):
         is_home = g["home_team"] == team
         team_score = g["home_score"] if is_home else g["away_score"]
         opp_score  = g["away_score"] if is_home else g["home_score"]
 
-        # Use player-level data from this game if available
         game_players = players_df[
             (players_df["game_id"] == g["id"]) & (players_df["team"] == team)
         ] if players_df is not None and not players_df.empty else pd.DataFrame()
 
         poss = estimate_possessions(team_score, opp_score, game_players if not game_players.empty else None)
-        poss_list.append(poss)
+        w = decay ** i
+        weighted_poss += poss * w
+        total_weight  += w
 
-    avg_poss = round(sum(poss_list) / len(poss_list), 1)
-    # Pace = possessions per 48 min. NBA games are 48 min.
-    # Possessions here are already per-game so pace ≈ possessions_per_game
+    avg_poss = round(weighted_poss / total_weight, 1) if total_weight > 0 else 0.0
     return {
         "possessions_per_game": avg_poss,
-        "pace": avg_poss,  # for a full 48-min game, poss = pace
-        "games_used": len(poss_list),
+        "pace": avg_poss,
+        "games_used": len(team_games),
     }
 
 
@@ -664,7 +665,7 @@ def h2h_pace(team_a, team_b, games_df, players_df, n=10):
     }
 
 
-def offensive_rating(team, games_df, players_df, n=10):
+def offensive_rating(team, games_df, players_df, n=10, decay=1.0):
     """
     Offensive rating = (points scored / estimated possessions) * 100.
     A higher number means the team scores more per 100 possessions.
@@ -674,6 +675,8 @@ def offensive_rating(team, games_df, players_df, n=10):
         games_df: games DataFrame
         players_df: players DataFrame
         n: last N games to use
+        decay: exponential decay factor (1.0 = equal weight,
+               0.85 = each older game weighted 15% less)
 
     Returns:
         float: offensive rating, or None if no data
@@ -685,8 +688,8 @@ def offensive_rating(team, games_df, players_df, n=10):
     if team_games.empty:
         return None
 
-    total_pts, total_poss = 0, 0
-    for _, g in team_games.iterrows():
+    total_pts, total_poss = 0.0, 0.0
+    for i, (_, g) in enumerate(team_games.iterrows()):
         is_home = g["home_team"] == team
         pts = g["home_score"] if is_home else g["away_score"]
         opp = g["away_score"] if is_home else g["home_score"]
@@ -694,18 +697,23 @@ def offensive_rating(team, games_df, players_df, n=10):
             (players_df["game_id"] == g["id"]) & (players_df["team"] == team)
         ] if players_df is not None and not players_df.empty else pd.DataFrame()
         poss = estimate_possessions(pts, opp, gp if not gp.empty else None)
-        total_pts  += pts
-        total_poss += poss
+        w = decay ** i
+        total_pts  += pts  * w
+        total_poss += poss * w
 
     if total_poss == 0:
         return None
     return round((total_pts / total_poss) * 100, 1)
 
 
-def defensive_rating(team, games_df, players_df, n=10):
+def defensive_rating(team, games_df, players_df, n=10, decay=1.0):
     """
     Defensive rating = (opponent points / estimated opponent possessions) * 100.
     Lower is better — fewer points allowed per 100 possessions.
+
+    Args:
+        decay: exponential decay factor (1.0 = equal weight,
+               0.85 = each older game weighted 15% less)
 
     Returns:
         float: defensive rating, or None if no data
@@ -717,14 +725,15 @@ def defensive_rating(team, games_df, players_df, n=10):
     if team_games.empty:
         return None
 
-    total_opp_pts, total_poss = 0, 0
-    for _, g in team_games.iterrows():
+    total_opp_pts, total_poss = 0.0, 0.0
+    for i, (_, g) in enumerate(team_games.iterrows()):
         is_home = g["home_team"] == team
         pts     = g["home_score"] if is_home else g["away_score"]
         opp_pts = g["away_score"] if is_home else g["home_score"]
         poss = estimate_possessions(pts, opp_pts)
-        total_opp_pts += opp_pts
-        total_poss    += poss
+        w = decay ** i
+        total_opp_pts += opp_pts * w
+        total_poss    += poss   * w
 
     if total_poss == 0:
         return None
@@ -946,13 +955,15 @@ def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
     """
     steps = {}
 
-    # Gather core metrics
-    pace_a_data = team_pace(team_a, games_df, players_df, n)
-    pace_b_data = team_pace(team_b, games_df, players_df, n)
-    ortg_a = offensive_rating(team_a, games_df, players_df, n)
-    ortg_b = offensive_rating(team_b, games_df, players_df, n)
-    drtg_a = defensive_rating(team_a, games_df, players_df, n)
-    drtg_b = defensive_rating(team_b, games_df, players_df, n)
+    # Gather core metrics — decay=0.85 weights recent games ~2× more than
+    # games from 5+ slots ago, keeping the model responsive to current form
+    _decay = 0.85
+    pace_a_data = team_pace(team_a, games_df, players_df, n, decay=_decay)
+    pace_b_data = team_pace(team_b, games_df, players_df, n, decay=_decay)
+    ortg_a = offensive_rating(team_a, games_df, players_df, n, decay=_decay)
+    ortg_b = offensive_rating(team_b, games_df, players_df, n, decay=_decay)
+    drtg_a = defensive_rating(team_a, games_df, players_df, n, decay=_decay)
+    drtg_b = defensive_rating(team_b, games_df, players_df, n, decay=_decay)
 
     pace_a_val = pace_a_data.get("pace") or pace_a_data.get("pace_per_48") if pace_a_data else None
     pace_b_val = pace_b_data.get("pace") or pace_b_data.get("pace_per_48") if pace_b_data else None
@@ -960,28 +971,46 @@ def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
     if not all([pace_a_val, pace_b_val, ortg_a, ortg_b, drtg_a, drtg_b]):
         return {"error": "Not enough game data — scrape more games first."}
 
-    # ── Step 1: Base Total (with pace-push context) ──
-    # Instead of simple average, weight toward the faster team.
-    # "Pace pushers" drag opponents up — the faster team has more
-    # control over tempo than the slower team can resist.
-    # Weight: 60% faster team's pace, 40% slower team's pace.
+    # ── Step 1: Base Total (pace-push + multiplicative matchup) ──
+    # Pace push: faster team has more tempo control (60/40 weight).
     if pace_a_val >= pace_b_val:
         expected_poss = pace_a_val * 0.6 + pace_b_val * 0.4
+        pace_push_team = "A"
     else:
         expected_poss = pace_b_val * 0.6 + pace_a_val * 0.4
-    exp_ortg_a = (ortg_a + drtg_b) / 2
-    exp_ortg_b = (ortg_b + drtg_a) / 2
+        pace_push_team = "B"
+
+    # Multiplicative matchup formula (standard in NBA analytics):
+    #   exp_ortg = (team_ortg × opp_drtg) / league_avg
+    # Captures the INTERACTION between offense and defense — a great offense
+    # vs a poor defense is multiplicatively better than simple averaging.
+    # e.g. 120 ORtg vs 120 DRtg allowed: avg→120, multiplicative→125.2
+    # League avg ORtg: compute from actual player box scores using the same
+    # Oliver possession formula as estimate_possessions(), so the denominator
+    # is consistent with how individual team ORtg / DRtg values are calculated.
+    _fga_all  = players_df["field_goals_attempted"].dropna().sum()
+    _oreb_all = players_df["off_rebounds"].dropna().sum()
+    _tov_all  = players_df["turnovers"].dropna().sum()
+    _fta_all  = players_df["free_throws_attempted"].dropna().sum()
+    _poss_all = _fga_all - _oreb_all + _tov_all + 0.44 * _fta_all
+    _pts_all  = games_df["home_score"].sum() + games_df["away_score"].sum()
+    league_avg_ortg = round((_pts_all / _poss_all) * 100, 1) if _poss_all > 0 else 115.0
+    league_avg_ortg = max(min(league_avg_ortg, 130.0), 105.0)   # sanity clamp
+
+    exp_ortg_a = round((ortg_a * drtg_b) / league_avg_ortg, 1)
+    exp_ortg_b = round((ortg_b * drtg_a) / league_avg_ortg, 1)
     base_total = expected_poss * (exp_ortg_a + exp_ortg_b) / 100
 
     steps["step_1_base"] = {
         "label": "Base Total",
         "pace_a": pace_a_val, "pace_b": pace_b_val,
         "expected_possessions": round(expected_poss, 1),
-        "pace_push": "A" if pace_a_val >= pace_b_val else "B",
+        "pace_push": pace_push_team,
         "ortg_a": ortg_a, "drtg_a": drtg_a,
         "ortg_b": ortg_b, "drtg_b": drtg_b,
-        "exp_ortg_a": round(exp_ortg_a, 1),
-        "exp_ortg_b": round(exp_ortg_b, 1),
+        "league_avg_ortg": league_avg_ortg,
+        "exp_ortg_a": exp_ortg_a,
+        "exp_ortg_b": exp_ortg_b,
         "base_total": round(base_total, 1),
     }
 
