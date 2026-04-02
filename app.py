@@ -817,14 +817,38 @@ with tab_pred:
             if "error" in proj:
                 st.warning(proj["error"])
             else:
-                # Big projected total number
-                st.markdown(
-                    f'<div style="background:#1a1a2e;padding:20px;border-radius:10px;text-align:center;'
-                    f'border:2px solid #6c5ce7;margin-bottom:16px;">'
-                    f'<div style="font-size:3rem;font-weight:bold;color:#6c5ce7;">{proj["projected_total"]}</div>'
-                    f'<div style="color:#a0a0a0;font-size:0.9rem;">Projected Game Total</div></div>',
-                    unsafe_allow_html=True,
-                )
+                # ── AI Formula: (avg_pts_a + avg_pts_b + avg_allowed_a + avg_allowed_b) / 2 + home bump ──
+                try:
+                    _avg_a = last_n_avg(h2h_team_a, 10, games_df).iloc[0]
+                    _avg_b = last_n_avg(h2h_team_b, 10, games_df).iloc[0]
+                    _ai_raw = (
+                        _avg_a["avg_scored"] + _avg_b["avg_scored"]
+                        + _avg_a["avg_conceded"] + _avg_b["avg_conceded"]
+                    ) / 2
+                    _home_bump = 2.5 if home_team_val else 0.0
+                    _ai_total = round(_ai_raw + _home_bump, 1)
+                except Exception:
+                    _ai_total = None
+
+                # Side-by-side display
+                col_scout, col_ai = st.columns(2)
+                with col_scout:
+                    st.markdown(
+                        f'<div style="background:#1a1a2e;padding:20px;border-radius:10px;text-align:center;'
+                        f'border:2px solid #6c5ce7;margin-bottom:16px;">'
+                        f'<div style="font-size:2.5rem;font-weight:bold;color:#6c5ce7;">{proj["projected_total"]}</div>'
+                        f'<div style="color:#a0a0a0;font-size:0.85rem;">Scout Model</div></div>',
+                        unsafe_allow_html=True,
+                    )
+                with col_ai:
+                    _ai_display = str(_ai_total) if _ai_total is not None else "N/A"
+                    st.markdown(
+                        f'<div style="background:#1a1a2e;padding:20px;border-radius:10px;text-align:center;'
+                        f'border:2px solid #00b894;margin-bottom:16px;">'
+                        f'<div style="font-size:2.5rem;font-weight:bold;color:#00b894;">{_ai_display}</div>'
+                        f'<div style="color:#a0a0a0;font-size:0.85rem;">AI Formula</div></div>',
+                        unsafe_allow_html=True,
+                    )
 
                 # Step-by-step breakdown
                 steps = proj["steps"]
