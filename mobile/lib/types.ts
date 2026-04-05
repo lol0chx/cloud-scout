@@ -103,3 +103,44 @@ export interface TopPerformers {
   batters?: { player: string; AVG: number; HR: number; RBI: number; games: number }[];
   pitchers?: { player: string; ERA: number; WHIP: number; IP: number; SO: number; games: number }[];
 }
+
+export interface StatBreakdown {
+  season_avg: number;
+  base_avg_decayed: number;
+  recent_avg_5g: number;
+  h2h_avg_raw: number | null;
+  h2h_avg_shrunk: number | null;
+  h2h_games: number;
+  h2h_weight_pct: number;
+  def_factor: number;
+  min_factor: number;
+  projected: number;
+}
+
+export interface PlayerProjection {
+  player: string;
+  team: string;
+  opponent: string;
+  projected: {
+    points: number;
+    assists: number;
+    rebounds: number;
+    steals: number;
+  };
+  breakdown: {
+    points: StatBreakdown;
+    assists: StatBreakdown;
+    rebounds: StatBreakdown;
+    steals: StatBreakdown;
+  };
+  h2h_games: number;
+  h2h_log: Record<string, unknown>[];
+  season_games_used: number;
+  recent_minutes: number;
+  season_minutes: number;
+  minutes_trend: number;
+  streak_context: 'hot' | 'cold' | 'normal';
+  injury_status: string | null;
+  injury_detail: string | null;
+  confidence: 'high' | 'medium' | 'low';
+}
