@@ -340,6 +340,240 @@ def player_vs_team(player_name, opponent, n, df, games_df=None):
     return result
 
 
+def player_projected_stats(player_name, opponent, players_df, games_df, injuries_df=None, n=15):
+    """
+    Project expected pts/ast/reb/stl for a player vs a specific opponent.
+
+    Blending formula per stat:
+      If H2H games available:
+        blended_base = season_avg × (1 - h2h_weight) + h2h_avg × h2h_weight
+        projected    = blended_base × 0.75 + recent_avg_5g × 0.25
+      else:
+        projected    = season_avg × 0.65 + recent_avg_5g × 0.35
+
+    H2H weight: 9% per game capped at 45% (5+ games) — head-to-head vs THIS
+    opponent is the most specific signal we have.
+
+    Then applies:
+      - Opponent defensive factor: how many pts/ast/reb/stl they allow per
+        player-game vs league average (capped ±25%)
+      - Minutes trend: ratio of recent 5-game avg minutes to season avg (capped ±20%)
+
+    Returns projected stats, full breakdown, H2H game log, injury flag,
+    streak context, and confidence level.
+    """
+    STATS = ["points", "assists", "rebounds", "steals"]
+
+    def _parse_min(m):
+        if not m or m == "0":
+            return 0.0
+        try:
+            if ":" in str(m):
+                p = str(m).split(":")
+                return float(p[0]) + float(p[1]) / 60.0
+            return float(m)
+        except (ValueError, TypeError):
+            return 0.0
+
+    # ── 1. Find player ────────────────────────────────────────────────────
+    norm_input = _normalize(player_name)
+    player_games = players_df[players_df["name"].apply(_normalize) == norm_input].copy()
+    if player_games.empty:
+        return {"error": f"No data found for player '{player_name}'."}
+
+    matched_name = player_games.iloc[0]["name"]
+    player_team = player_games.iloc[0]["team"]
+    player_games = player_games.sort_values("date", ascending=False)
+
+    # ── 2. Injury status ──────────────────────────────────────────────────
+    injury_status = None
+    injury_detail = None
+    if injuries_df is not None and not injuries_df.empty:
+        inj = injuries_df[injuries_df["player_name"].str.lower() == matched_name.lower()]
+        if not inj.empty:
+            injury_status = str(inj.iloc[0]["status"]).lower()
+            injury_detail = inj.iloc[0].get("injury_type") or inj.iloc[0].get("detail")
+
+    # ── 3. Baseline: games 6–n (the "extended" period, distinct from recent) ──
+    # Keeping recent and base separate avoids double-counting: if recent is
+    # blended in later, it shouldn't already live inside the baseline average.
+    season_games = player_games.head(n)
+    if season_games.empty:
+        return {"error": f"Insufficient data for '{player_name}'."}
+
+    recent_games  = player_games.head(5)                     # games 1–5
+    base_games    = player_games.iloc[5:n]                   # games 6–n (non-overlapping)
+    has_base      = not base_games.empty
+
+    # Decay-weighted baseline: weight = 0.88^i so game 10 is ~0.28× game 1
+    _D = 0.88
+    def _decay_avg(df_slice, stat):
+        vals = df_slice[stat].tolist()
+        weights = [_D ** i for i in range(len(vals))]
+        ws = sum(weights)
+        return round(sum(v * w for v, w in zip(vals, weights)) / ws, 2) if ws > 0 else 0.0
+
+    recent_avg = {s: round(float(recent_games[s].mean()), 2) for s in STATS}
+    base_avg   = {s: _decay_avg(base_games, s) for s in STATS} if has_base else recent_avg
+    # Full-season avg (for streak comparison and H2H Bayesian prior)
+    season_avg = {s: round(float(season_games[s].mean()), 2) for s in STATS}
+
+    # Streak context vs full season avg
+    if season_avg["points"] > 0:
+        r = recent_avg["points"] / season_avg["points"]
+        streak_context = "hot" if r >= 1.20 else ("cold" if r <= 0.80 else "normal")
+    else:
+        streak_context = "normal"
+
+    # ── 4. Head-to-head vs opponent (decay-weighted, capped at 10) ────────
+    # Decay rewards recent matchups: a game from 3 seasons ago matters far
+    # less than one from last month.
+    # Bayesian shrinkage: H2H is shrunk toward season avg proportionally to
+    # sample size — prevents 1-game outliers from skewing the projection.
+    h2h_n = 0
+    h2h_avg = None
+    h2h_raw_avg = None  # undecayed, for display
+    h2h_log_records = []
+    if not games_df.empty:
+        merged = player_games.merge(
+            games_df[["id", "home_team", "away_team"]],
+            left_on="game_id", right_on="id", how="left"
+        )
+        merged["_opp"] = merged.apply(
+            lambda r: r["away_team"] if r["team"] == r["home_team"] else r["home_team"], axis=1
+        )
+        h2h_rows = merged[merged["_opp"] == opponent].sort_values("date", ascending=False).head(10)
+        h2h_n = len(h2h_rows)
+        if h2h_n > 0:
+            # Decay-weighted H2H average (0.85^i per game back)
+            h2h_decay = 0.85
+            h2h_weights = [h2h_decay ** i for i in range(h2h_n)]
+            h2h_ws = sum(h2h_weights)
+            h2h_avg = {}
+            h2h_raw_avg = {}
+            for s in STATS:
+                vals = h2h_rows[s].tolist()
+                h2h_avg[s] = round(
+                    sum(v * w for v, w in zip(vals, h2h_weights)) / h2h_ws, 2
+                )
+                h2h_raw_avg[s] = round(float(h2h_rows[s].mean()), 2)
+
+            # Bayesian shrinkage toward season avg:
+            # With k H2H games and prior strength M=5, shrunk = (k*h2h + M*season) / (k+M)
+            # At k=1: 17% H2H, 83% season. At k=5: 50/50. At k=10: 67% H2H.
+            _M = 5
+            h2h_shrunk = {}
+            for s in STATS:
+                h2h_shrunk[s] = round(
+                    (h2h_n * h2h_avg[s] + _M * season_avg[s]) / (h2h_n + _M), 2
+                )
+            h2h_avg = h2h_shrunk  # use shrunk version for projection
+
+            log_cols = ["date"] + STATS + ["minutes"]
+            log_df = h2h_rows[log_cols].copy()
+            log_df["minutes"] = log_df["minutes"].apply(_parse_min).round(1)
+            h2h_log_records = log_df.where(pd.notnull(log_df), None).to_dict(orient="records")
+
+    # ── 5. Opponent defensive adjustment (current-season games only) ───────
+    # Filter to the most recent season in the DB so stale data doesn't dilute
+    # a defense that has changed. Compare opponent's allowance per player-game
+    # to the league-wide per-player-game average — same denominator for both.
+    def_factors = {s: 1.0 for s in STATS}
+    if not games_df.empty and not players_df.empty:
+        latest_season = games_df["season"].max() if "season" in games_df.columns else None
+        season_games_df = (
+            games_df[games_df["season"] == latest_season] if latest_season else games_df
+        )
+        opp_gids = season_games_df[
+            (season_games_df["home_team"] == opponent) | (season_games_df["away_team"] == opponent)
+        ]["id"].values
+        # Recent-season player games against this opponent (excluding opponent's own players)
+        vs_opp = players_df[
+            players_df["game_id"].isin(opp_gids) & (players_df["team"] != opponent)
+        ]
+        # League baseline: same season's player games (all teams)
+        season_player_gids = season_games_df["id"].values
+        season_players = players_df[players_df["game_id"].isin(season_player_gids)]
+        for s in STATS:
+            lg_avg = season_players[s].mean() if not season_players.empty else players_df[s].mean()
+            opp_allowed = vs_opp[s].mean() if not vs_opp.empty else lg_avg
+            if lg_avg > 0:
+                def_factors[s] = max(min(opp_allowed / lg_avg, 1.25), 0.75)
+
+    # ── 6. Minutes trend ──────────────────────────────────────────────────
+    season_min = player_games.head(n)["minutes"].apply(_parse_min).mean()
+    recent_min = recent_games["minutes"].apply(_parse_min).mean()
+    min_factor = max(min((recent_min / season_min) if season_min > 0 else 1.0, 1.20), 0.80)
+
+    # ── 7. Blend and project ──────────────────────────────────────────────
+    # Final blend (non-overlapping components):
+    #   recent_avg  = games 1–5         (25%)
+    #   base_avg    = games 6–n, decayed (35%)
+    #   h2h_avg     = shrunk+decayed H2H (up to 40%)
+    #
+    # H2H weight scales with sample: 8% per game, max 40%.
+    # The remainder splits 41% base / 19% recent (≈ 2:1 ratio).
+    h2h_weight  = min(0.40, h2h_n * 0.08) if h2h_n > 0 else 0.0
+    base_weight = (1 - h2h_weight) * 0.70   # 70% of non-H2H → base
+    rec_weight  = (1 - h2h_weight) * 0.30   # 30% of non-H2H → recent
+
+    projected = {}
+    breakdown = {}
+    for s in STATS:
+        ra = recent_avg[s]
+        ba = base_avg[s]
+        if h2h_avg is not None and h2h_weight > 0:
+            raw = h2h_avg[s] * h2h_weight + ba * base_weight + ra * rec_weight
+        else:
+            raw = ba * 0.70 + ra * 0.30
+        adjusted = raw * def_factors[s] * min_factor
+        projected[s] = round(max(adjusted, 0.0), 1)
+        breakdown[s] = {
+            "season_avg": season_avg[s],
+            "base_avg_decayed": base_avg[s],
+            "recent_avg_5g": ra,
+            "h2h_avg_raw": h2h_raw_avg[s] if h2h_raw_avg else None,
+            "h2h_avg_shrunk": h2h_avg[s] if h2h_avg else None,
+            "h2h_games": h2h_n,
+            "h2h_weight_pct": round(h2h_weight * 100),
+            "def_factor": round(def_factors[s], 3),
+            "min_factor": round(min_factor, 3),
+            "projected": projected[s],
+        }
+
+    # Confidence based on data richness
+    total_games = len(season_games)
+    if h2h_n >= 5 and total_games >= 10:
+        confidence = "high"
+    elif h2h_n >= 2 or total_games >= 8:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return {
+        "player": matched_name,
+        "team": player_team,
+        "opponent": opponent,
+        "projected": {
+            "points": projected["points"],
+            "assists": projected["assists"],
+            "rebounds": projected["rebounds"],
+            "steals": projected["steals"],
+        },
+        "breakdown": breakdown,
+        "h2h_games": h2h_n,
+        "h2h_log": h2h_log_records,
+        "season_games_used": total_games,
+        "recent_minutes": round(recent_min, 1),
+        "season_minutes": round(season_min, 1),
+        "minutes_trend": round(min_factor, 3),
+        "streak_context": streak_context,
+        "injury_status": injury_status,
+        "injury_detail": injury_detail,
+        "confidence": confidence,
+    }
+
+
 def home_away_stats(team, df):
     """
     Calculate home and away performance stats for a team across all games.
@@ -427,13 +661,19 @@ def season_standings(df):
     return pd.DataFrame(rows).sort_values("Win%", ascending=False).reset_index(drop=True)
 
 
-def win_probability(team_a, team_b, df, home_team=None, pts_per_logit=6.0):
+def win_probability(team_a, team_b, df, home_team=None, pts_per_logit=6.0, players_df=None):
     """
-    Estimate win probability using overall win%, H2H record, and home/away splits.
-    Weights: overall 35%, H2H 30%, home/away 35%.
-    Returns (prob_a, prob_b, predicted_margin) where margin is from team_a's perspective.
+    Enhanced 6-factor win probability model.
 
-    pts_per_logit scales the log-odds to a point spread.
+    Factors and weights:
+      10% — Overall win %          (season-long record)
+      20% — Point differential     (avg margin, more predictive than W/L)
+      25% — H2H win record         (how these teams fare against each other)
+      15% — H2H point differential (avg margin specifically in this matchup)
+      20% — Home/away context      (home court, road splits)
+      10% — Recent form            (last-10 win %)
+
+    pts_per_logit scales log-odds → spread.
     NBA ≈ 6.0 (13 pts ≈ 90% win), MLB ≈ 3.5 (3 runs ≈ 70% win).
     """
     def _win_pct(team):
@@ -443,6 +683,23 @@ def win_probability(team_a, team_b, df, home_team=None, pts_per_logit=6.0):
         s = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
         c = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
         return (s.values > c.values).mean()
+
+    def _avg_margin(team):
+        tg = df[(df["home_team"] == team) | (df["away_team"] == team)]
+        if tg.empty:
+            return 0.0
+        s = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
+        c = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
+        return float((s - c).mean())
+
+    def _recent_wp(team, n=10):
+        tg = df[(df["home_team"] == team) | (df["away_team"] == team)]
+        tg = tg.sort_values("date", ascending=False).head(n)
+        if tg.empty:
+            return 0.5
+        s = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
+        c = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
+        return float((s.values > c.values).mean())
 
     def _home_win_pct(team):
         hg = df[df["home_team"] == team]
@@ -456,6 +713,11 @@ def win_probability(team_a, team_b, df, home_team=None, pts_per_logit=6.0):
             return _win_pct(team)
         return (ag["away_score"] > ag["home_score"]).mean()
 
+    def _margin_to_pct(margin):
+        """Convert avg point margin to [0,1] probability. ±15 pt margin → ~0.85/0.15."""
+        return max(min(0.5 + margin / 30.0, 0.92), 0.08)
+
+    # ── H2H data ──────────────────────────────────────────────────────────
     h2h = df[
         ((df["home_team"] == team_a) & (df["away_team"] == team_b)) |
         ((df["home_team"] == team_b) & (df["away_team"] == team_a))
@@ -463,12 +725,25 @@ def win_probability(team_a, team_b, df, home_team=None, pts_per_logit=6.0):
     if not h2h.empty:
         a_s = h2h.apply(lambda r: r["home_score"] if r["home_team"] == team_a else r["away_score"], axis=1)
         b_s = h2h.apply(lambda r: r["home_score"] if r["home_team"] == team_b else r["away_score"], axis=1)
-        h2h_pct_a = (a_s.values > b_s.values).mean()
+        h2h_pct_a = float((a_s.values > b_s.values).mean())
+        h2h_margin_a = float((a_s - b_s).mean())
     else:
         h2h_pct_a = 0.5
+        h2h_margin_a = 0.0
 
+    # ── Per-factor values ─────────────────────────────────────────────────
     wp_a = _win_pct(team_a)
     wp_b = _win_pct(team_b)
+
+    # Point differential: use relative difference so both teams are compared head-on
+    margin_a = _avg_margin(team_a)
+    margin_b = _avg_margin(team_b)
+    margin_pct_a = _margin_to_pct(margin_a - margin_b)
+
+    h2h_margin_pct_a = _margin_to_pct(h2h_margin_a)
+
+    recent_wp_a = _recent_wp(team_a)
+    recent_wp_b = _recent_wp(team_b)
 
     if home_team == team_a:
         ha_a = _home_win_pct(team_a)
@@ -479,12 +754,26 @@ def win_probability(team_a, team_b, df, home_team=None, pts_per_logit=6.0):
     else:
         ha_a, ha_b = wp_a, wp_b
 
-    score_a = wp_a * 0.35 + h2h_pct_a * 0.30 + ha_a * 0.35
-    score_b = wp_b * 0.35 + (1 - h2h_pct_a) * 0.30 + ha_b * 0.35
+    # ── 6-factor weighted score ───────────────────────────────────────────
+    score_a = (
+        wp_a              * 0.10 +
+        margin_pct_a      * 0.20 +
+        h2h_pct_a         * 0.25 +
+        h2h_margin_pct_a  * 0.15 +
+        ha_a              * 0.20 +
+        recent_wp_a       * 0.10
+    )
+    score_b = (
+        wp_b                       * 0.10 +
+        (1 - margin_pct_a)         * 0.20 +
+        (1 - h2h_pct_a)            * 0.25 +
+        (1 - h2h_margin_pct_a)     * 0.15 +
+        ha_b                       * 0.20 +
+        recent_wp_b                * 0.10
+    )
     total = score_a + score_b
     prob_a = round(score_a / total * 100, 1) if total > 0 else 50.0
     prob_b = round(100 - prob_a, 1)
-    # Logit conversion: clamp probabilities to avoid log(0), then scale
     p = max(min(prob_a / 100, 0.99), 0.01)
     margin = round(math.log(p / (1 - p)) * pts_per_logit, 1)
     return prob_a, prob_b, margin
@@ -999,7 +1288,36 @@ def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
 
     exp_ortg_a = round((ortg_a * drtg_b) / league_avg_ortg, 1)
     exp_ortg_b = round((ortg_b * drtg_a) / league_avg_ortg, 1)
-    base_total = expected_poss * (exp_ortg_a + exp_ortg_b) / 100
+    pace_model_total = expected_poss * (exp_ortg_a + exp_ortg_b) / 100
+
+    # ── H2H total anchor ──────────────────────────────────────────────────
+    # When these two teams have met before, those actual combined scores are the
+    # sharpest signal for how THIS specific matchup scores — far more specific
+    # than any general pace/rating model. We blend the H2H average in heavily,
+    # scaling weight with sample size (9% per game, max 45% at 5 games).
+    _h2h_for_total = games_df[
+        ((games_df["home_team"] == team_a) & (games_df["away_team"] == team_b)) |
+        ((games_df["home_team"] == team_b) & (games_df["away_team"] == team_a))
+    ].sort_values("date", ascending=False).head(10).copy()
+
+    h2h_total_avg = None
+    h2h_total_n = 0
+    h2h_total_weight = 0.0
+    if not _h2h_for_total.empty:
+        _h2h_for_total["_total"] = _h2h_for_total["home_score"] + _h2h_for_total["away_score"]
+        # Apply recency decay within H2H games too
+        _hw = [_decay ** i for i in range(len(_h2h_for_total))]
+        _hw_sum = sum(_hw)
+        h2h_total_avg = sum(
+            _h2h_for_total.iloc[i]["_total"] * _hw[i] for i in range(len(_h2h_for_total))
+        ) / _hw_sum
+        h2h_total_n = len(_h2h_for_total)
+        h2h_total_weight = min(0.45, h2h_total_n * 0.09)
+
+    if h2h_total_avg is not None and h2h_total_weight > 0:
+        base_total = pace_model_total * (1 - h2h_total_weight) + h2h_total_avg * h2h_total_weight
+    else:
+        base_total = pace_model_total
 
     steps["step_1_base"] = {
         "label": "Base Total",
@@ -1011,6 +1329,10 @@ def projected_total(team_a, team_b, games_df, players_df, home_team=None, n=10,
         "league_avg_ortg": league_avg_ortg,
         "exp_ortg_a": exp_ortg_a,
         "exp_ortg_b": exp_ortg_b,
+        "pace_model_total": round(pace_model_total, 1),
+        "h2h_total_avg": round(h2h_total_avg, 1) if h2h_total_avg is not None else None,
+        "h2h_total_games": h2h_total_n,
+        "h2h_total_weight_pct": round(h2h_total_weight * 100),
         "base_total": round(base_total, 1),
     }
 
