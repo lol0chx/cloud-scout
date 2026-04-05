@@ -21,6 +21,7 @@ from analytics import (
     home_away_stats,
     last_n_avg,
     player_avg,
+    player_projected_stats,
     player_vs_team,
     projected_total,
     rolling_form,
@@ -354,6 +355,33 @@ def get_player_vs_team(name: str, opponent: str, league: str = "NBA", n: int = 1
             players_df = load_players(conn)
             result = player_vs_team(name, opponent, n, players_df, games_df)
         return _to_json(result)[0] if not result.empty else {}
+    finally:
+        conn.close()
+
+
+@app.get("/player/projected")
+def get_player_projected(name: str, opponent: str, n: int = 15):
+    """
+    Project expected pts/ast/reb/stl for an NBA player vs a specific opponent.
+
+    Blends season averages, head-to-head history (heavily weighted), recent 5-game
+    form, opponent defensive tendencies, and minutes trend into a single projection.
+    Also returns H2H game log, injury flag, streak context, and confidence level.
+    """
+    conn = _conn()
+    try:
+        games_df = load_games(conn, league="NBA")
+        players_df = load_players(conn)
+        injuries_df = load_injuries(conn, league="NBA")
+        if players_df.empty:
+            raise HTTPException(404, "No player data in database")
+        result = player_projected_stats(
+            name, opponent, players_df, games_df,
+            injuries_df=injuries_df, n=n
+        )
+        if "error" in result:
+            raise HTTPException(404, result["error"])
+        return result
     finally:
         conn.close()
 

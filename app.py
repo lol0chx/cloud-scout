@@ -20,6 +20,7 @@ from analytics import (
     head_to_head,
     rolling_form,
     player_avg,
+    player_projected_stats,
     player_vs_team,
     top_performers,
     home_away_stats,
@@ -437,16 +438,93 @@ with tab_player:
                 st.warning(str(e))
 
         with col_right:
-            st.markdown("**vs Specific Team**")
-            opponent_sel = st.selectbox("Opponent", NBA_TEAMS, key="pvt_opponent")
-            try:
-                pvt_df = player_vs_team(player_sel, opponent_sel, num_games, players_df, games_df)
-                if pvt_df.empty:
-                    st.info(f"No matchup data for {player_sel} vs {opponent_sel}.")
-                else:
-                    st.dataframe(pvt_df, use_container_width=True, hide_index=True)
-            except Exception as e:
-                st.warning(str(e))
+            st.markdown("**Opponent**")
+            opponent_sel = st.selectbox("Select opponent team", NBA_TEAMS, key="pvt_opponent")
+
+        st.divider()
+
+        # ── Player Projection vs Opponent ─────────────────────────────────
+        st.markdown(f"### Projected Stats — {player_sel} vs {opponent_sel}")
+
+        proj = player_projected_stats(player_sel, opponent_sel, players_df, games_df,
+                                      injuries_df=injuries_df, n=num_games)
+
+        if "error" in proj:
+            st.warning(proj["error"])
+        else:
+            # Injury / streak banners
+            if proj["injury_status"] and proj["injury_status"] not in ("probable",):
+                st.error(f"⚠️ {proj['injury_status'].upper()}  ·  {proj['injury_detail'] or ''}")
+
+            streak = proj["streak_context"]
+            if streak == "hot":
+                st.success("🔥 HOT — scoring 20%+ above season average over last 5 games")
+            elif streak == "cold":
+                st.warning("❄️ COLD — scoring 20%+ below season average over last 5 games")
+
+            # Confidence + data summary
+            conf_color = {"high": "🟢", "medium": "🟡", "low": "🔴"}[proj["confidence"]]
+            h2h_n = proj["h2h_games"]
+            min_trend = proj["minutes_trend"]
+            min_dir = f"↑ +{round((min_trend-1)*100)}%" if min_trend > 1.05 else (f"↓ {round((min_trend-1)*100)}%" if min_trend < 0.95 else "avg")
+            st.caption(
+                f"{conf_color} Confidence: **{proj['confidence'].upper()}**  ·  "
+                f"H2H games: **{h2h_n}**  ·  "
+                f"Season games: **{proj['season_games_used']}**  ·  "
+                f"Recent min: **{proj['recent_minutes']}** ({min_dir} vs season)"
+            )
+
+            # Big projected stat tiles
+            pc1, pc2, pc3, pc4 = st.columns(4)
+            for col, stat, label in [
+                (pc1, "points",   "PTS"),
+                (pc2, "assists",  "AST"),
+                (pc3, "rebounds", "REB"),
+                (pc4, "steals",   "STL"),
+            ]:
+                col.metric(label, proj["projected"][stat])
+
+            # Per-stat breakdown table
+            st.markdown("**Projection Breakdown**")
+            bd_rows = []
+            for stat, label in [("points","PTS"),("assists","AST"),("rebounds","REB"),("steals","STL")]:
+                bd = proj["breakdown"][stat]
+                def_pct = round((bd["def_factor"] - 1) * 100)
+                def_str = f"+{def_pct}%" if def_pct > 0 else (f"{def_pct}%" if def_pct < 0 else "avg")
+                h2h_str = (f"{bd['h2h_avg_shrunk']} shrunk / {bd['h2h_avg_raw']} raw  ({bd['h2h_games']}g, {bd['h2h_weight_pct']}% wt)"
+                           if bd["h2h_avg_shrunk"] is not None else "—")
+                bd_rows.append({
+                    "Stat": label,
+                    "Season Avg": bd["season_avg"],
+                    f"H2H vs {opponent_sel}": h2h_str,
+                    "Recent 5G": bd["recent_avg_5g"],
+                    "Opp Def": def_str,
+                    "Min Trend": f"×{bd['min_factor']}",
+                    "Projected": bd["projected"],
+                })
+            st.dataframe(pd.DataFrame(bd_rows), use_container_width=True, hide_index=True)
+
+            # H2H game log
+            if proj["h2h_log"]:
+                with st.expander(f"H2H Game Log vs {opponent_sel} ({h2h_n} games)"):
+                    h2h_log_df = pd.DataFrame(proj["h2h_log"])
+                    show_cols = [c for c in ["date","points","assists","rebounds","steals","minutes"] if c in h2h_log_df.columns]
+                    st.dataframe(h2h_log_df[show_cols], use_container_width=True, hide_index=True)
+            else:
+                st.info(f"No H2H history for {player_sel} vs {opponent_sel} — projection uses season & recent form only.")
+
+        st.divider()
+
+        # ── Historical vs Team (raw avg) ──────────────────────────────────
+        st.markdown(f"**Historical Averages vs {opponent_sel}**")
+        try:
+            pvt_df = player_vs_team(player_sel, opponent_sel, num_games, players_df, games_df)
+            if pvt_df.empty:
+                st.info(f"No matchup data for {player_sel} vs {opponent_sel}.")
+            else:
+                st.dataframe(pvt_df, use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.warning(str(e))
 
         st.markdown("**Game Log**")
         player_log = players_df[players_df["name"] == player_sel].sort_values("date", ascending=False).head(num_games)
