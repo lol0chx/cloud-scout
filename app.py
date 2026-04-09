@@ -1115,6 +1115,161 @@ with tab_pred:
             _rest_col1.metric(f"{h2h_team_a} Rest", f"{_ra}d" if _ra >= 0 else "B2B")
             _rest_col2.metric(f"{h2h_team_b} Rest", f"{_rb}d" if _rb >= 0 else "B2B")
 
+            # ── Projected Total Runs ──────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("#### Projected Total Runs")
+
+            def _mlb_avg_runs_scored(team, n):
+                tg = _mlb_team_games(team, n)
+                if tg.empty:
+                    return 4.5
+                scored = tg.apply(
+                    lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1
+                )
+                return float(scored.mean())
+
+            def _mlb_sp_suppression(opp_team, n):
+                """Opponent SP ERA → scoring multiplier. ERA 2.5=0.85x, ERA 6.5=1.15x."""
+                pitchers = _mlb_pitchers(opp_team, n)
+                if pitchers.empty:
+                    return 1.0
+                starters, _ = _split_rotation(pitchers)
+                if starters.empty:
+                    return 1.0
+                ip = starters["innings_pitched"].sum()
+                if ip <= 0:
+                    return 1.0
+                era = _safe_era_inline(starters["earned_runs"].sum(), ip)
+                return max(0.75, min(1.25, 1.0 + (era - 4.50) * 0.075))
+
+            def _mlb_bullpen_suppression(opp_team, n):
+                """Opponent bullpen ERA → late-inning scoring multiplier."""
+                pitchers = _mlb_pitchers(opp_team, n)
+                if pitchers.empty:
+                    return 1.0
+                _, relievers = _split_rotation(pitchers)
+                if relievers.empty:
+                    return 1.0
+                ip = relievers["innings_pitched"].sum()
+                if ip <= 0:
+                    return 1.0
+                era = _safe_era_inline(relievers["earned_runs"].sum(), ip)
+                return max(0.88, min(1.10, 1.0 + (era - 4.50) * 0.040))
+
+            def _mlb_obp_factor(team, n):
+                """OBP-based offensive multiplier. 0.320 = neutral."""
+                batters = _mlb_batters(team, n)
+                if batters.empty:
+                    return 1.0
+                ab = batters["at_bats"].sum()
+                hits = batters["hits"].sum()
+                bb = batters["walks"].sum()
+                obp = (hits + bb) / max(ab + bb, 1)
+                return max(0.90, min(1.10, 1.0 + (obp - 0.320) * 1.0))
+
+            def _mlb_hr_bonus(team, n):
+                """Extra runs from HR/G above league avg (1.0 HR/G)."""
+                batters = _mlb_batters(team, n)
+                if batters.empty:
+                    return 0.0
+                g = max(len(_mlb_team_game_ids(team, n)), 1)
+                hr_pg = batters["home_runs"].sum() / g
+                return max(0.0, (hr_pg - 1.0) * 0.25)
+
+            def _mlb_h2h_avg_total(team_a, team_b, n=20):
+                """Historical H2H average combined runs."""
+                h2h = games_df[
+                    ((games_df["home_team"] == team_a) & (games_df["away_team"] == team_b)) |
+                    ((games_df["home_team"] == team_b) & (games_df["away_team"] == team_a))
+                ].sort_values("date", ascending=False).head(n)
+                if h2h.empty:
+                    return None
+                return float((h2h["home_score"] + h2h["away_score"]).mean())
+
+            def _mlb_projected_total(team_a, team_b, is_a_home, n):
+                park_a = 1.02 if is_a_home else 0.98
+                park_b = 0.98 if is_a_home else 1.02
+                rest_a = 1.03 if _rest_days_mlb(team_a) >= 2 else (1.0 if _rest_days_mlb(team_a) == 1 else 0.97)
+                rest_b = 1.03 if _rest_days_mlb(team_b) >= 2 else (1.0 if _rest_days_mlb(team_b) == 1 else 0.97)
+
+                # Team A projected runs = A offense vs B pitching staff
+                a_proj = (
+                    _mlb_avg_runs_scored(team_a, n)
+                    * _mlb_sp_suppression(team_b, n)
+                    * _mlb_bullpen_suppression(team_b, n)
+                    * _mlb_obp_factor(team_a, n)
+                    * rest_a
+                    * park_a
+                ) + _mlb_hr_bonus(team_a, n)
+
+                # Team B projected runs = B offense vs A pitching staff
+                b_proj = (
+                    _mlb_avg_runs_scored(team_b, n)
+                    * _mlb_sp_suppression(team_a, n)
+                    * _mlb_bullpen_suppression(team_a, n)
+                    * _mlb_obp_factor(team_b, n)
+                    * rest_b
+                    * park_b
+                ) + _mlb_hr_bonus(team_b, n)
+
+                formula_total = a_proj + b_proj
+                h2h_avg = _mlb_h2h_avg_total(team_a, team_b)
+                # 80% formula-driven, 20% H2H historical when available
+                blended = (formula_total * 0.80 + h2h_avg * 0.20) if h2h_avg else formula_total
+                return {
+                    "total": round(blended, 1),
+                    "team_a_runs": round(a_proj, 2),
+                    "team_b_runs": round(b_proj, 2),
+                    "formula_total": round(formula_total, 1),
+                    "h2h_avg": round(h2h_avg, 1) if h2h_avg else None,
+                }
+
+            _proj_runs = _mlb_projected_total(h2h_team_a, h2h_team_b, _is_a_home, _N)
+
+            # Big total display
+            st.markdown(
+                f'<div style="background:#1e1e2e;padding:20px;border-radius:12px;text-align:center;border:2px solid #6c5ce7;">'
+                f'<div style="color:#aaa;font-size:0.85rem;letter-spacing:1px;text-transform:uppercase;">Projected Combined Runs</div>'
+                f'<div style="font-size:3.5rem;font-weight:800;color:#f8f8f2;line-height:1.1;">{_proj_runs["total"]}</div>'
+                f'<div style="color:#6c5ce7;font-size:0.9rem;margin-top:4px;">'
+                f'{h2h_team_a} {_proj_runs["team_a_runs"]} &nbsp;·&nbsp; {h2h_team_b} {_proj_runs["team_b_runs"]}'
+                f'</div></div>',
+                unsafe_allow_html=True,
+            )
+
+            st.markdown("")
+            with st.expander("Total Runs breakdown", expanded=False):
+                _tr_cols = st.columns(3)
+                _tr_cols[0].metric("Formula Total", _proj_runs["formula_total"])
+                _tr_cols[1].metric(
+                    "H2H Avg Total",
+                    str(_proj_runs["h2h_avg"]) if _proj_runs["h2h_avg"] else "N/A",
+                )
+                _tr_cols[2].metric("Blended Total", _proj_runs["total"])
+
+                st.caption(
+                    "**Formula:** Each team's avg runs × opponent SP ERA suppression × "
+                    "bullpen ERA suppression × OBP factor × rest factor × park factor + HR bonus. "
+                    "Final = 80% formula + 20% H2H historical average (when available)."
+                )
+
+                _factor_rows = [
+                    ("Avg Runs/G",         round(_mlb_avg_runs_scored(h2h_team_a, _N), 2),   round(_mlb_avg_runs_scored(h2h_team_b, _N), 2)),
+                    ("vs Opp SP (mult)",   round(_mlb_sp_suppression(h2h_team_b, _N), 3),     round(_mlb_sp_suppression(h2h_team_a, _N), 3)),
+                    ("vs Opp Bullpen",     round(_mlb_bullpen_suppression(h2h_team_b, _N), 3), round(_mlb_bullpen_suppression(h2h_team_a, _N), 3)),
+                    ("OBP Factor",         round(_mlb_obp_factor(h2h_team_a, _N), 3),         round(_mlb_obp_factor(h2h_team_b, _N), 3)),
+                    ("HR Bonus (+runs)",   round(_mlb_hr_bonus(h2h_team_a, _N), 2),           round(_mlb_hr_bonus(h2h_team_b, _N), 2)),
+                ]
+                _fh = st.columns([3, 1, 1])
+                _fh[0].markdown("**Factor**")
+                _fh[1].markdown(f"**{h2h_team_a}**")
+                _fh[2].markdown(f"**{h2h_team_b}**")
+                for _fname, _fva, _fvb in _factor_rows:
+                    _fc = st.columns([3, 1, 1])
+                    _fc[0].markdown(_fname)
+                    _fc[1].markdown(str(_fva))
+                    _fc[2].markdown(str(_fvb))
+
         else:
             # ── NBA: existing 6-factor win probability ────────────────────────
             prob_a, prob_b, margin = win_probability(
