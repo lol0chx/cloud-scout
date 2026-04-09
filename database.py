@@ -130,6 +130,32 @@ def init_db(db_path="cloudscout.db"):
         )
     """)
 
+    # Referee season stats — scraped from NBAStuffer
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS referee_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            games_officiated INTEGER,
+            total_ppg REAL,
+            fouls_per_game REAL,
+            home_win_pct REAL,
+            last_updated TEXT NOT NULL,
+            UNIQUE (name)
+        )
+    """)
+
+    # Referee game assignments — scraped from official.nba.com
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS referee_assignments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_matchup TEXT NOT NULL,
+            referee_name TEXT NOT NULL,
+            role TEXT NOT NULL,
+            assignment_date TEXT NOT NULL,
+            UNIQUE (game_matchup, referee_name, assignment_date)
+        )
+    """)
+
     conn.commit()
     return conn
 
@@ -404,3 +430,54 @@ def load_injuries(conn, team=None, league="NBA"):
         params.append(team)
     query += " ORDER BY team, status, player_name"
     return pd.read_sql_query(query, conn, params=params)
+
+
+# ── Referee helpers ───────────────────────────────────────────────────────────
+
+def upsert_referee_stats(conn, stats):
+    cursor = conn.cursor()
+    cursor.executemany("""
+        INSERT OR REPLACE INTO referee_stats
+            (name, games_officiated, total_ppg, fouls_per_game, home_win_pct, last_updated)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, [
+        (s["name"], s.get("games_officiated"), s.get("total_ppg"),
+         s.get("fouls_per_game"), s.get("home_win_pct"), s["last_updated"])
+        for s in stats
+    ])
+    conn.commit()
+
+
+def clear_referee_stats(conn):
+    conn.cursor().execute("DELETE FROM referee_stats")
+    conn.commit()
+
+
+def load_referee_stats(conn):
+    return pd.read_sql_query("SELECT * FROM referee_stats ORDER BY name", conn)
+
+
+def upsert_referee_assignments(conn, assignments):
+    cursor = conn.cursor()
+    cursor.executemany("""
+        INSERT OR REPLACE INTO referee_assignments
+            (game_matchup, referee_name, role, assignment_date)
+        VALUES (?, ?, ?, ?)
+    """, [
+        (a["game_matchup"], a["referee_name"], a["role"], a["assignment_date"])
+        for a in assignments
+    ])
+    conn.commit()
+
+
+def clear_referee_assignments(conn):
+    conn.cursor().execute("DELETE FROM referee_assignments")
+    conn.commit()
+
+
+def load_referee_assignments(conn, date=None):
+    if date:
+        return pd.read_sql_query(
+            "SELECT * FROM referee_assignments WHERE assignment_date = ? ORDER BY game_matchup",
+            conn, params=[date])
+    return pd.read_sql_query("SELECT * FROM referee_assignments ORDER BY assignment_date DESC, game_matchup", conn)

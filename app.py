@@ -12,14 +12,15 @@ import streamlit as st
 import pandas as pd
 from nba_api.stats.static import teams as nba_teams
 
-from database import init_db, load_games, load_players, load_mlb_players, load_injuries
-from scraper import scrape_team, scrape_injuries, fetch_todays_games, fetch_starters
+from database import init_db, load_games, load_players, load_mlb_players, load_injuries, load_referee_stats, load_referee_assignments
+from scraper import scrape_team, scrape_injuries, fetch_todays_games, fetch_starters, scrape_referees
 from mlb_scraper import scrape_mlb_team, get_all_mlb_teams, DEFAULT_SEASON as MLB_DEFAULT_SEASON
 from analytics import (
     last_n_avg,
     head_to_head,
     rolling_form,
     player_avg,
+    player_projected_stats,
     player_vs_team,
     top_performers,
     home_away_stats,
@@ -143,6 +144,27 @@ if not injuries_df.empty:
     st.sidebar.caption(f"{len(injuries_df)} players on report ({out_count} Out/Doubtful)")
 else:
     st.sidebar.caption("No injury data — click Refresh to fetch.")
+
+# ── Sidebar: Referee Data ────────────────────────────────────────────────────
+if not IS_MLB:
+    st.sidebar.divider()
+    st.sidebar.header("Referee Data")
+    if st.sidebar.button("Refresh Referees"):
+        with st.sidebar.status("Fetching referee stats & assignments...", expanded=True):
+            stats_n, assign_n = scrape_referees()
+            st.sidebar.success(f"Updated {stats_n} ref stats, {assign_n} assignments.")
+        conn.close()
+        conn = init_db()
+
+    ref_stats_df = load_referee_stats(conn)
+    ref_assign_df = load_referee_assignments(conn)
+    if not ref_stats_df.empty:
+        st.sidebar.caption(f"{len(ref_stats_df)} referees tracked, {len(ref_assign_df)} assignments today")
+    else:
+        st.sidebar.caption("No referee data — click Refresh to fetch.")
+else:
+    ref_stats_df = pd.DataFrame()
+    ref_assign_df = pd.DataFrame()
 
 st.sidebar.divider()
 
@@ -416,16 +438,93 @@ with tab_player:
                 st.warning(str(e))
 
         with col_right:
-            st.markdown("**vs Specific Team**")
-            opponent_sel = st.selectbox("Opponent", NBA_TEAMS, key="pvt_opponent")
-            try:
-                pvt_df = player_vs_team(player_sel, opponent_sel, num_games, players_df, games_df)
-                if pvt_df.empty:
-                    st.info(f"No matchup data for {player_sel} vs {opponent_sel}.")
-                else:
-                    st.dataframe(pvt_df, use_container_width=True, hide_index=True)
-            except Exception as e:
-                st.warning(str(e))
+            st.markdown("**Opponent**")
+            opponent_sel = st.selectbox("Select opponent team", NBA_TEAMS, key="pvt_opponent")
+
+        st.divider()
+
+        # ── Player Projection vs Opponent ─────────────────────────────────
+        st.markdown(f"### Projected Stats — {player_sel} vs {opponent_sel}")
+
+        proj = player_projected_stats(player_sel, opponent_sel, players_df, games_df,
+                                      injuries_df=injuries_df, n=num_games)
+
+        if "error" in proj:
+            st.warning(proj["error"])
+        else:
+            # Injury / streak banners
+            if proj["injury_status"] and proj["injury_status"] not in ("probable",):
+                st.error(f"⚠️ {proj['injury_status'].upper()}  ·  {proj['injury_detail'] or ''}")
+
+            streak = proj["streak_context"]
+            if streak == "hot":
+                st.success("🔥 HOT — scoring 20%+ above season average over last 5 games")
+            elif streak == "cold":
+                st.warning("❄️ COLD — scoring 20%+ below season average over last 5 games")
+
+            # Confidence + data summary
+            conf_color = {"high": "🟢", "medium": "🟡", "low": "🔴"}[proj["confidence"]]
+            h2h_n = proj["h2h_games"]
+            min_trend = proj["minutes_trend"]
+            min_dir = f"↑ +{round((min_trend-1)*100)}%" if min_trend > 1.05 else (f"↓ {round((min_trend-1)*100)}%" if min_trend < 0.95 else "avg")
+            st.caption(
+                f"{conf_color} Confidence: **{proj['confidence'].upper()}**  ·  "
+                f"H2H games: **{h2h_n}**  ·  "
+                f"Season games: **{proj['season_games_used']}**  ·  "
+                f"Recent min: **{proj['recent_minutes']}** ({min_dir} vs season)"
+            )
+
+            # Big projected stat tiles
+            pc1, pc2, pc3, pc4 = st.columns(4)
+            for col, stat, label in [
+                (pc1, "points",   "PTS"),
+                (pc2, "assists",  "AST"),
+                (pc3, "rebounds", "REB"),
+                (pc4, "steals",   "STL"),
+            ]:
+                col.metric(label, proj["projected"][stat])
+
+            # Per-stat breakdown table
+            st.markdown("**Projection Breakdown**")
+            bd_rows = []
+            for stat, label in [("points","PTS"),("assists","AST"),("rebounds","REB"),("steals","STL")]:
+                bd = proj["breakdown"][stat]
+                def_pct = round((bd["def_factor"] - 1) * 100)
+                def_str = f"+{def_pct}%" if def_pct > 0 else (f"{def_pct}%" if def_pct < 0 else "avg")
+                h2h_str = (f"{bd['h2h_avg_shrunk']} shrunk / {bd['h2h_avg_raw']} raw  ({bd['h2h_games']}g, {bd['h2h_weight_pct']}% wt)"
+                           if bd["h2h_avg_shrunk"] is not None else "—")
+                bd_rows.append({
+                    "Stat": label,
+                    "Season Avg": bd["season_avg"],
+                    f"H2H vs {opponent_sel}": h2h_str,
+                    "Recent 5G": bd["recent_avg_5g"],
+                    "Opp Def": def_str,
+                    "Min Trend": f"×{bd['min_factor']}",
+                    "Projected": bd["projected"],
+                })
+            st.dataframe(pd.DataFrame(bd_rows), use_container_width=True, hide_index=True)
+
+            # H2H game log
+            if proj["h2h_log"]:
+                with st.expander(f"H2H Game Log vs {opponent_sel} ({h2h_n} games)"):
+                    h2h_log_df = pd.DataFrame(proj["h2h_log"])
+                    show_cols = [c for c in ["date","points","assists","rebounds","steals","minutes"] if c in h2h_log_df.columns]
+                    st.dataframe(h2h_log_df[show_cols], use_container_width=True, hide_index=True)
+            else:
+                st.info(f"No H2H history for {player_sel} vs {opponent_sel} — projection uses season & recent form only.")
+
+        st.divider()
+
+        # ── Historical vs Team (raw avg) ──────────────────────────────────
+        st.markdown(f"**Historical Averages vs {opponent_sel}**")
+        try:
+            pvt_df = player_vs_team(player_sel, opponent_sel, num_games, players_df, games_df)
+            if pvt_df.empty:
+                st.info(f"No matchup data for {player_sel} vs {opponent_sel}.")
+            else:
+                st.dataframe(pvt_df, use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.warning(str(e))
 
         st.markdown("**Game Log**")
         player_log = players_df[players_df["name"] == player_sel].sort_values("date", ascending=False).head(num_games)
@@ -719,33 +818,365 @@ with tab_pred:
         home_options = ["Neutral", h2h_team_a, h2h_team_b]
         pred_home = col3.selectbox("Home team", home_options, key="pred_home")
         home_team_val = None if pred_home == "Neutral" else pred_home
-        _logit_scale = 3.5 if IS_MLB else 6.0
-        prob_a, prob_b, margin = win_probability(h2h_team_a, h2h_team_b, games_df, home_team=home_team_val, pts_per_logit=_logit_scale)
 
-        pc1, pc2 = st.columns(2)
-        fav_color_a = "#2ea44f" if prob_a >= prob_b else "#cf222e"
-        fav_color_b = "#2ea44f" if prob_b > prob_a else "#cf222e"
-        pc1.markdown(
-            f'<div style="background:{fav_color_a};padding:16px;border-radius:8px;text-align:center;">'
-            f'<div style="font-size:2rem;font-weight:bold;color:white;">{prob_a}%</div>'
-            f'<div style="color:white;">{h2h_team_a}</div></div>', unsafe_allow_html=True
-        )
-        pc2.markdown(
-            f'<div style="background:{fav_color_b};padding:16px;border-radius:8px;text-align:center;">'
-            f'<div style="font-size:2rem;font-weight:bold;color:white;">{prob_b}%</div>'
-            f'<div style="color:white;">{h2h_team_b}</div></div>', unsafe_allow_html=True
-        )
+        if IS_MLB:
+            # ── 8-Pillar MLB Prediction Model (2026) ─────────────────────────
+            import math as _math
+            from datetime import datetime as _dt
 
-        spread_label = "Predicted Run Line" if IS_MLB else "Predicted Spread"
-        spread_unit = "runs" if IS_MLB else "pts"
-        st.markdown("---")
-        st.markdown(f"#### {spread_label}")
-        if margin > 0:
-            st.info(f"**{h2h_team_a}** favored by **{abs(margin)} {spread_unit}**")
-        elif margin < 0:
-            st.info(f"**{h2h_team_b}** favored by **{abs(margin)} {spread_unit}**")
+            _N = num_games  # use same lookback window as rest of the page
+
+            def _mlb_team_games(team, n):
+                tg = games_df[(games_df["home_team"] == team) | (games_df["away_team"] == team)]
+                return tg.sort_values("date", ascending=False).head(n)
+
+            def _mlb_team_game_ids(team, n):
+                return _mlb_team_games(team, n)["id"].tolist()
+
+            def _mlb_pitchers(team, n):
+                gids = _mlb_team_game_ids(team, n)
+                return players_df[
+                    (players_df["role"] == "pitcher") &
+                    (players_df["team"] == team) &
+                    (players_df["game_id"].isin(gids))
+                ]
+
+            def _mlb_batters(team, n):
+                gids = _mlb_team_game_ids(team, n)
+                return players_df[
+                    (players_df["role"] == "batter") &
+                    (players_df["team"] == team) &
+                    (players_df["game_id"].isin(gids))
+                ]
+
+            def _split_rotation(team_pitchers):
+                if team_pitchers.empty:
+                    return team_pitchers, team_pitchers
+                starter_idx = team_pitchers.groupby("game_id")["innings_pitched"].idxmax()
+                starters = team_pitchers.loc[starter_idx]
+                relievers = team_pitchers[~team_pitchers.index.isin(starter_idx)]
+                return starters, relievers
+
+            def _safe_era_inline(er, ip):
+                try:
+                    ip = float(ip)
+                    return round((float(er) / ip) * 9, 2) if ip > 0 else 0.0
+                except Exception:
+                    return 0.0
+
+            # Pillar 1 — Pitching Matchup Quality (SP ERA + WHIP composite)
+            def _p1_pitching(team):
+                pitchers = _mlb_pitchers(team, _N)
+                if pitchers.empty:
+                    return 0.5
+                starters, _ = _split_rotation(pitchers)
+                if starters.empty:
+                    return 0.5
+                ip = starters["innings_pitched"].sum()
+                if ip <= 0:
+                    return 0.5
+                era = _safe_era_inline(starters["earned_runs"].sum(), ip)
+                whip = round((starters["walks_allowed"].sum() + starters["hits_allowed"].sum()) / ip, 2)
+                era_score = max(0.0, min(1.0, (8.0 - era) / 8.0))
+                whip_score = max(0.0, min(1.0, (2.5 - whip) / 2.5))
+                return round(era_score * 0.6 + whip_score * 0.4, 4)
+
+            # Pillar 2 — Offensive Power (AVG + HR/G + RBI/G)
+            def _p2_offense(team):
+                batters = _mlb_batters(team, _N)
+                if batters.empty:
+                    return 0.5
+                ab = batters["at_bats"].sum()
+                hits = batters["hits"].sum()
+                hr = batters["home_runs"].sum()
+                rbi = batters["rbi"].sum()
+                g = max(len(_mlb_team_game_ids(team, _N)), 1)
+                avg = round(hits / ab, 3) if ab > 0 else 0.0
+                hr_pg = hr / g
+                rbi_pg = rbi / g
+                avg_s = max(0.0, min(1.0, (avg - 0.200) / 0.100))
+                hr_s = max(0.0, min(1.0, (hr_pg - 0.5) / 1.5))
+                rbi_s = max(0.0, min(1.0, (rbi_pg - 3.0) / 5.0))
+                return round(avg_s * 0.40 + hr_s * 0.35 + rbi_s * 0.25, 4)
+
+            # Pillar 3 — Bullpen Depth & Efficiency (reliever ERA)
+            def _p3_bullpen(team):
+                pitchers = _mlb_pitchers(team, _N)
+                if pitchers.empty:
+                    return 0.5
+                _, relievers = _split_rotation(pitchers)
+                if relievers.empty:
+                    return 0.5
+                ip = relievers["innings_pitched"].sum()
+                if ip <= 0:
+                    return 0.5
+                era = _safe_era_inline(relievers["earned_runs"].sum(), ip)
+                return round(max(0.0, min(1.0, (8.0 - era) / 8.0)), 4)
+
+            # Pillar 4 — Defensive Efficiency (runs allowed per game; lower = better)
+            def _p4_defense(team):
+                tg = _mlb_team_games(team, _N)
+                if tg.empty:
+                    return 0.5
+                conceded = tg.apply(
+                    lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1
+                )
+                return round(max(0.0, min(1.0, (8.0 - conceded.mean()) / 6.0)), 4)
+
+            # Pillar 5 — ABS Challenge Efficiency (plate discipline proxy)
+            def _p5_abs(team):
+                batters = _mlb_batters(team, _N)
+                pitchers = _mlb_pitchers(team, _N)
+                bb_drawn = batters["walks"].sum() if not batters.empty else 0
+                ab = batters["at_bats"].sum() if not batters.empty else 1
+                ip = pitchers["innings_pitched"].sum() if not pitchers.empty else 1
+                bb_allowed = pitchers["walks_allowed"].sum() if not pitchers.empty else 0
+                drawn_rate = bb_drawn / max(ab, 1)
+                allowed_rate = bb_allowed / max(ip, 1)
+                drawn_s = max(0.0, min(1.0, (drawn_rate - 0.05) / 0.10))
+                allowed_s = max(0.0, min(1.0, (2.5 - allowed_rate) / 2.0))
+                return round(drawn_s * 0.5 + allowed_s * 0.5, 4)
+
+            # Pillar 6 — Baserunning & Stolen Base Threat (R/H speed proxy)
+            def _p6_baserunning(team):
+                batters = _mlb_batters(team, _N)
+                if batters.empty:
+                    return 0.5
+                hits = batters["hits"].sum()
+                runs = batters["runs"].sum()
+                if hits == 0:
+                    return 0.5
+                r_per_h = runs / hits
+                return round(max(0.0, min(1.0, (r_per_h - 0.30) / 0.40)), 4)
+
+            # Pillar 7 — Home/Away & Park Factor
+            def _p7_homeaway(team, is_home):
+                tg = _mlb_team_games(team, _N)
+                if tg.empty:
+                    return 0.5
+                if is_home:
+                    hg = tg[tg["home_team"] == team]
+                    if hg.empty:
+                        scored = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
+                        conceded = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
+                        return float((scored.values > conceded.values).mean())
+                    return float((hg["home_score"] > hg["away_score"]).mean())
+                else:
+                    ag = tg[tg["away_team"] == team]
+                    if ag.empty:
+                        scored = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
+                        conceded = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
+                        return float((scored.values > conceded.values).mean())
+                    return float((ag["away_score"] > ag["home_score"]).mean())
+
+            # Pillar 8 — Situational Context (rest days + recent 5-game form)
+            def _rest_days_mlb(team):
+                tg = games_df[
+                    (games_df["home_team"] == team) | (games_df["away_team"] == team)
+                ].sort_values("date", ascending=False)
+                if len(tg) < 2:
+                    return 1
+                try:
+                    d1 = _dt.strptime(str(tg.iloc[0]["date"])[:10], "%Y-%m-%d")
+                    d2 = _dt.strptime(str(tg.iloc[1]["date"])[:10], "%Y-%m-%d")
+                    return max(0, (d1 - d2).days)
+                except Exception:
+                    return 1
+
+            def _recent_form_mlb(team, m=5):
+                tg = games_df[(games_df["home_team"] == team) | (games_df["away_team"] == team)]
+                tg = tg.sort_values("date", ascending=False).head(m)
+                if tg.empty:
+                    return 0.5
+                scored = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
+                conceded = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
+                return float((scored.values > conceded.values).mean())
+
+            def _p8_situation(team):
+                rest = _rest_days_mlb(team)
+                rest_s = 0.65 if rest >= 2 else (0.50 if rest == 1 else 0.30)
+                form_s = _recent_form_mlb(team)
+                return round(rest_s * 0.40 + form_s * 0.60, 4)
+
+            # ── Compute all pillars ───────────────────────────────────────────
+            _is_a_home = (home_team_val == h2h_team_a)
+            _is_b_home = (home_team_val == h2h_team_b)
+
+            _pillar_data = [
+                ("Pitching Matchup",        0.22, _p1_pitching(h2h_team_a),          _p1_pitching(h2h_team_b)),
+                ("Offensive Power",         0.18, _p2_offense(h2h_team_a),            _p2_offense(h2h_team_b)),
+                ("Bullpen Depth",           0.12, _p3_bullpen(h2h_team_a),            _p3_bullpen(h2h_team_b)),
+                ("Defensive Efficiency",    0.10, _p4_defense(h2h_team_a),            _p4_defense(h2h_team_b)),
+                ("ABS Challenge Eff.",      0.08, _p5_abs(h2h_team_a),               _p5_abs(h2h_team_b)),
+                ("Baserunning & SB Threat", 0.08, _p6_baserunning(h2h_team_a),        _p6_baserunning(h2h_team_b)),
+                ("Home/Away & Park",        0.12, _p7_homeaway(h2h_team_a, _is_a_home), _p7_homeaway(h2h_team_b, _is_b_home)),
+                ("Situational Context",     0.10, _p8_situation(h2h_team_a),          _p8_situation(h2h_team_b)),
+            ]
+
+            _score_a = sum(w * sa for _, w, sa, _ in _pillar_data)
+            _score_b = sum(w * sb for _, w, _, sb in _pillar_data)
+            _total_score = _score_a + _score_b
+
+            if _total_score == 0:
+                prob_a, prob_b, margin = 50.0, 50.0, 0.0
+            else:
+                prob_a = round(_score_a / _total_score * 100, 1)
+                prob_b = round(100 - prob_a, 1)
+                _p = max(min(prob_a / 100, 0.99), 0.01)
+                margin = round(_math.log(_p / (1 - _p)) * 1.8, 1)
+
+            # ── Win probability display ───────────────────────────────────────
+            pc1, pc2 = st.columns(2)
+            fav_color_a = "#2ea44f" if prob_a >= prob_b else "#cf222e"
+            fav_color_b = "#2ea44f" if prob_b > prob_a else "#cf222e"
+            pc1.markdown(
+                f'<div style="background:{fav_color_a};padding:16px;border-radius:8px;text-align:center;">'
+                f'<div style="font-size:2rem;font-weight:bold;color:white;">{prob_a}%</div>'
+                f'<div style="color:white;">{h2h_team_a}</div></div>', unsafe_allow_html=True
+            )
+            pc2.markdown(
+                f'<div style="background:{fav_color_b};padding:16px;border-radius:8px;text-align:center;">'
+                f'<div style="font-size:2rem;font-weight:bold;color:white;">{prob_b}%</div>'
+                f'<div style="color:white;">{h2h_team_b}</div></div>', unsafe_allow_html=True
+            )
+
+            # ── Run line ─────────────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("#### Predicted Run Line")
+            if margin > 0:
+                st.info(f"**{h2h_team_a}** favored by **{abs(margin)} runs**")
+            elif margin < 0:
+                st.info(f"**{h2h_team_b}** favored by **{abs(margin)} runs**")
+            else:
+                st.info("Pick 'em — no advantage detected.")
+
+            # ── 8-Pillar Breakdown ────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("#### 8-Pillar Scout Model (2026)")
+            st.caption(
+                "Pitching · Offense · Bullpen · Defense · ABS Plate Discipline · "
+                "Baserunning/Speed · Home/Park · Situational — weighted composite"
+            )
+
+            with st.expander("Pillar-by-pillar breakdown", expanded=True):
+                _pillar_header = st.columns([3, 1, 1, 1, 1])
+                _pillar_header[0].markdown("**Pillar**")
+                _pillar_header[1].markdown("**Wt**")
+                _pillar_header[2].markdown(f"**{h2h_team_a}**")
+                _pillar_header[3].markdown(f"**{h2h_team_b}**")
+                _pillar_header[4].markdown("**Edge**")
+
+                for _pname, _pw, _psa, _psb in _pillar_data:
+                    _edge = h2h_team_a if _psa > _psb else (h2h_team_b if _psb > _psa else "Even")
+                    _ca = "#2ea44f22" if _psa > _psb else ("#cf222e22" if _psa < _psb else "#ffffff00")
+                    _cb = "#2ea44f22" if _psb > _psa else ("#cf222e22" if _psb < _psa else "#ffffff00")
+                    _edge_color = "#2ea44f" if _edge == h2h_team_a else ("#6c5ce7" if _edge == h2h_team_b else "#888888")
+                    _cols = st.columns([3, 1, 1, 1, 1])
+                    _cols[0].markdown(_pname)
+                    _cols[1].markdown(f"{int(_pw * 100)}%")
+                    _cols[2].markdown(
+                        f'<div style="background:{_ca};padding:3px 8px;border-radius:4px;">{_psa:.3f}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    _cols[3].markdown(
+                        f'<div style="background:{_cb};padding:3px 8px;border-radius:4px;">{_psb:.3f}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    _cols[4].markdown(
+                        f'<span style="color:{_edge_color};font-weight:600;">{_edge}</span>',
+                        unsafe_allow_html=True,
+                    )
+
+                # Composite score row
+                st.markdown("---")
+                _comp_cols = st.columns([3, 1, 1, 1, 1])
+                _comp_cols[0].markdown("**Composite Score**")
+                _comp_cols[1].markdown("100%")
+                _comp_a_color = "#2ea44f22" if _score_a > _score_b else "#cf222e22"
+                _comp_b_color = "#2ea44f22" if _score_b > _score_a else "#cf222e22"
+                _comp_cols[2].markdown(
+                    f'<div style="background:{_comp_a_color};padding:3px 8px;border-radius:4px;font-weight:700;">{round(_score_a, 3)}</div>',
+                    unsafe_allow_html=True,
+                )
+                _comp_cols[3].markdown(
+                    f'<div style="background:{_comp_b_color};padding:3px 8px;border-radius:4px;font-weight:700;">{round(_score_b, 3)}</div>',
+                    unsafe_allow_html=True,
+                )
+                _winner = h2h_team_a if _score_a >= _score_b else h2h_team_b
+                _comp_cols[4].markdown(
+                    f'<span style="color:#2ea44f;font-weight:700;">{_winner}</span>',
+                    unsafe_allow_html=True,
+                )
+
+            # ── Rest days context ─────────────────────────────────────────────
+            _ra = _rest_days_mlb(h2h_team_a)
+            _rb = _rest_days_mlb(h2h_team_b)
+            _rest_col1, _rest_col2 = st.columns(2)
+            _rest_col1.metric(f"{h2h_team_a} Rest", f"{_ra}d" if _ra >= 0 else "B2B")
+            _rest_col2.metric(f"{h2h_team_b} Rest", f"{_rb}d" if _rb >= 0 else "B2B")
+
         else:
-            st.info("Pick 'em — no advantage detected.")
+            # ── NBA: existing 6-factor win probability ────────────────────────
+            prob_a, prob_b, margin = win_probability(
+                h2h_team_a, h2h_team_b, games_df,
+                home_team=home_team_val, pts_per_logit=6.0
+            )
+
+            pc1, pc2 = st.columns(2)
+            fav_color_a = "#2ea44f" if prob_a >= prob_b else "#cf222e"
+            fav_color_b = "#2ea44f" if prob_b > prob_a else "#cf222e"
+            pc1.markdown(
+                f'<div style="background:{fav_color_a};padding:16px;border-radius:8px;text-align:center;">'
+                f'<div style="font-size:2rem;font-weight:bold;color:white;">{prob_a}%</div>'
+                f'<div style="color:white;">{h2h_team_a}</div></div>', unsafe_allow_html=True
+            )
+            pc2.markdown(
+                f'<div style="background:{fav_color_b};padding:16px;border-radius:8px;text-align:center;">'
+                f'<div style="font-size:2rem;font-weight:bold;color:white;">{prob_b}%</div>'
+                f'<div style="color:white;">{h2h_team_b}</div></div>', unsafe_allow_html=True
+            )
+
+            st.markdown("---")
+            st.markdown("#### Predicted Spread")
+            if margin > 0:
+                st.info(f"**{h2h_team_a}** favored by **{abs(margin)} pts**")
+            elif margin < 0:
+                st.info(f"**{h2h_team_b}** favored by **{abs(margin)} pts**")
+            else:
+                st.info("Pick 'em — no advantage detected.")
+
+    # ── Referee Assignment ────────────────────────────────────────────────────
+    if not IS_MLB and not ref_assign_df.empty and h2h_team_a != h2h_team_b:
+        team_a_parts = [w for w in h2h_team_a.lower().split() if len(w) > 3]
+        team_b_parts = [w for w in h2h_team_b.lower().split() if len(w) > 3]
+        matched = ref_assign_df[
+            ref_assign_df["game_matchup"].str.lower().apply(
+                lambda m: any(w in m for w in team_a_parts) and any(w in m for w in team_b_parts)
+            )
+        ]
+        if not matched.empty:
+            st.markdown("---")
+            st.markdown("#### Tonight's Referee Crew")
+            crew = matched[["referee_name", "role"]].values.tolist()
+            role_order = {"Crew Chief": 0, "Referee": 1, "Umpire": 2}
+            crew.sort(key=lambda x: role_order.get(x[1], 9))
+            cols = st.columns(len(crew))
+            for col, (name, role) in zip(cols, crew):
+                # Look up this ref's stats
+                if not ref_stats_df.empty:
+                    rs = ref_stats_df[ref_stats_df["name"].str.strip().str.lower() == name.strip().lower()]
+                    if rs.empty:
+                        last = name.strip().split()[-1].lower()
+                        rs = ref_stats_df[ref_stats_df["name"].str.strip().str.split().str[-1].str.lower() == last]
+                    if not rs.empty:
+                        r = rs.iloc[0]
+                        ppg = f"{r['total_ppg']:.1f} PPG" if pd.notna(r.get("total_ppg")) else ""
+                        fpg = f"{r['fouls_per_game']:.1f} FPG" if pd.notna(r.get("fouls_per_game")) else ""
+                        col.metric(label=f"{role}", value=name, delta=f"{ppg}  {fpg}".strip())
+                    else:
+                        col.metric(label=f"{role}", value=name)
+                else:
+                    col.metric(label=f"{role}", value=name)
 
     # ── Projected Over/Under Total (NBA only) ────────────────────────────────
     if not IS_MLB and not games_df.empty and h2h_team_a != h2h_team_b:
@@ -757,18 +1188,44 @@ with tab_pred:
                 h2h_team_a, h2h_team_b, games_df, players_df_full,
                 home_team=home_team_val if 'home_team_val' in dir() else None, n=10,
                 injuries_df=injuries_df,
+                referee_stats_df=ref_stats_df,
+                referee_assignments_df=ref_assign_df,
             )
             if "error" in proj:
                 st.warning(proj["error"])
             else:
-                # Big projected total number
-                st.markdown(
-                    f'<div style="background:#1a1a2e;padding:20px;border-radius:10px;text-align:center;'
-                    f'border:2px solid #6c5ce7;margin-bottom:16px;">'
-                    f'<div style="font-size:3rem;font-weight:bold;color:#6c5ce7;">{proj["projected_total"]}</div>'
-                    f'<div style="color:#a0a0a0;font-size:0.9rem;">Projected Game Total</div></div>',
-                    unsafe_allow_html=True,
-                )
+                # ── AI Formula: (avg_pts_a + avg_pts_b + avg_allowed_a + avg_allowed_b) / 2 + home bump ──
+                try:
+                    _avg_a = last_n_avg(h2h_team_a, 10, games_df).iloc[0]
+                    _avg_b = last_n_avg(h2h_team_b, 10, games_df).iloc[0]
+                    _ai_raw = (
+                        _avg_a["avg_scored"] + _avg_b["avg_scored"]
+                        + _avg_a["avg_conceded"] + _avg_b["avg_conceded"]
+                    ) / 2
+                    _home_bump = 2.5 if home_team_val else 0.0
+                    _ai_total = round(_ai_raw + _home_bump, 1)
+                except Exception:
+                    _ai_total = None
+
+                # Side-by-side display
+                col_scout, col_ai = st.columns(2)
+                with col_scout:
+                    st.markdown(
+                        f'<div style="background:#1a1a2e;padding:20px;border-radius:10px;text-align:center;'
+                        f'border:2px solid #6c5ce7;margin-bottom:16px;">'
+                        f'<div style="font-size:2.5rem;font-weight:bold;color:#6c5ce7;">{proj["projected_total"]}</div>'
+                        f'<div style="color:#a0a0a0;font-size:0.85rem;">Scout Model</div></div>',
+                        unsafe_allow_html=True,
+                    )
+                with col_ai:
+                    _ai_display = str(_ai_total) if _ai_total is not None else "N/A"
+                    st.markdown(
+                        f'<div style="background:#1a1a2e;padding:20px;border-radius:10px;text-align:center;'
+                        f'border:2px solid #00b894;margin-bottom:16px;">'
+                        f'<div style="font-size:2.5rem;font-weight:bold;color:#00b894;">{_ai_display}</div>'
+                        f'<div style="color:#a0a0a0;font-size:0.85rem;">AI Formula</div></div>',
+                        unsafe_allow_html=True,
+                    )
 
                 # Step-by-step breakdown
                 steps = proj["steps"]
@@ -822,25 +1279,25 @@ with tab_pred:
                             f"**{s4['adjustment']:+.1f}** pts"
                         )
 
-                    # Step 5 — Rest
+                    # Step 5 — Rest & Travel
                     s5 = steps["step_5_rest"]
                     rest_a_str = f"{s5['rest_days_a']}d" if s5['rest_days_a'] is not None else "?"
                     rest_b_str = f"{s5['rest_days_b']}d" if s5['rest_days_b'] is not None else "?"
-                    if s5.get("b2b_a"):
-                        rest_a_str += " (B2B)"
-                    if s5.get("b2b_b"):
-                        rest_b_str += " (B2B)"
+                    note_a = f" ({s5['rest_note_a']})" if s5.get("rest_note_a") else ""
+                    note_b = f" ({s5['rest_note_b']})" if s5.get("rest_note_b") else ""
                     st.markdown(
-                        f"**Step 5 — Rest** — "
-                        f"{h2h_team_a} **{rest_a_str}** | {h2h_team_b} **{rest_b_str}** → "
+                        f"**Step 5 — Rest & Travel** — "
+                        f"{h2h_team_a} **{rest_a_str}**{note_a} | "
+                        f"{h2h_team_b} **{rest_b_str}**{note_b} → "
                         f"**{s5['adjustment']:+.1f}** pts"
                     )
 
-                    # Step 6 — Home Court
+                    # Step 6 — Home Court & Altitude
                     s6 = steps["step_6_home_court"]
+                    alt_str = f" (altitude +{s6['altitude_adj']})" if s6.get("altitude_adj") else ""
                     st.markdown(
                         f"**Step 6 — Home Court** — "
-                        f"**{s6['home_team']}** → **{s6['adjustment']:+.1f}** pts"
+                        f"**{s6['home_team']}**{alt_str} → **{s6['adjustment']:+.1f}** pts"
                     )
 
                     # Step 7 — Recent Form
@@ -888,6 +1345,46 @@ with tab_pred:
                                 )
                             st.markdown("<br>".join(lines), unsafe_allow_html=True)
 
+                    # Step 9 — Referees
+                    s9 = steps["step_9_referees"]
+                    if s9.get("skipped"):
+                        st.markdown(f"**Step 9 — Referees** — _{s9.get('reason', 'No data')}_")
+                    else:
+                        ref_lines = [
+                            f"**Step 9 — Referees** (lg avg {s9['league_avg_ppg']} PPG) → **{s9['adjustment']:+.1f}** pts"
+                        ]
+                        for r in s9.get("refs", []):
+                            fpg = f" · {r['fouls_pg']} FPG" if r.get("fouls_pg") else ""
+                            games = f" · {r['games']}G" if r.get("games") else ""
+                            ref_lines.append(
+                                f"**{r['name']}** — **{r['total_ppg']} PPG** "
+                                f"(Δ **{r['delta']:+.1f}**){fpg}{games}"
+                            )
+                        st.markdown("<br>".join(ref_lines), unsafe_allow_html=True)
+
+                    # Step 10 — Rebounds
+                    s10 = steps["step_10_rebounds"]
+                    if s10.get("skipped"):
+                        st.markdown("**Step 10 — Rebounds** — _Skipped_")
+                    else:
+                        st.markdown(
+                            f"**Step 10 — Rebounds** — "
+                            f"OREB%: **{s10['oreb_pct_a']}%** / **{s10['oreb_pct_b']}%** "
+                            f"(lg avg {s10['league_avg_oreb']}%) → "
+                            f"**{s10['adjustment']:+.1f}** pts"
+                        )
+
+                    # Step 11 — Motivation
+                    s11 = steps["step_11_motivation"]
+                    rivalry_str = " · 🔥 Rivalry game (+1.0)" if s11.get("is_rivalry") else ""
+                    st.markdown(
+                        f"**Step 11 — Motivation** — "
+                        f"{h2h_team_a}: _{s11['team_a_context']}_ | "
+                        f"{h2h_team_b}: _{s11['team_b_context']}_"
+                        f"{rivalry_str} → "
+                        f"**{s11['adjustment']:+.1f}** pts"
+                    )
+
                     # Final summary
                     f = steps["final"]
                     st.markdown(
@@ -900,6 +1397,9 @@ with tab_pred:
                         f"**{f['home_adj']:+.1f}** (home) "
                         f"**{f['form_adj']:+.1f}** (form) "
                         f"**{f['injury_adj']:+.1f}** (inj) "
+                        f"**{f['ref_adj']:+.1f}** (ref) "
+                        f"**{f['oreb_adj']:+.1f}** (reb) "
+                        f"**{f['motivation_adj']:+.1f}** (mot) "
                         f"= **{f['projected_total']}**"
                     )
 

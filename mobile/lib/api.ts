@@ -5,6 +5,7 @@ import type {
   H2H,
   NBAPlayerStats,
   PitcherStats,
+  PlayerProjection,
   Prediction,
   Sport,
   Standing,
@@ -84,6 +85,9 @@ export const api = {
 
   playerLog: (league: Sport, name: string, n = 20, role = 'batter') =>
     get<unknown[]>(`/player/log?league=${league}&name=${enc(name)}&n=${n}&role=${role}`),
+
+  playerProjected: (name: string, opponent: string, n = 15) =>
+    get<PlayerProjection>(`/player/projected?name=${enc(name)}&opponent=${enc(opponent)}&n=${n}`),
 
   scrapeTeam: (league: Sport, team: string, last = 15, season = 2025) =>
     post<{ games_added: number; players_added: number }>('/scrape/team', {
