@@ -44,8 +44,43 @@ st.set_page_config(page_title="CloudScout", page_icon="🏟", layout="wide")
 st.title("🏟 CloudScout")
 st.caption("Multi-Sport Stats & Analytics Dashboard")
 
+# ── Custom sidebar styling ────────────────────────────────────────────────────
+st.markdown("""
+<style>
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+}
+[data-testid="stSidebar"] .stRadio > label {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: #1e293b;
+}
+[data-testid="stSidebar"] [role="radio"] {
+    accent-color: #ef4444;
+}
+.sidebar-section {
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(139, 92, 246, 0.08) 100%);
+    border-radius: 14px;
+    padding: 16px;
+    margin-bottom: 16px;
+    border: 2px solid rgba(59, 130, 246, 0.2);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+.sidebar-title {
+    font-weight: 800;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: #1e293b;
+    margin-bottom: 14px;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # ── Sport selector ────────────────────────────────────────────────────────────
-sport = st.sidebar.radio("Sport", ["🏀 NBA", "⚾ MLB"], horizontal=True)
+st.sidebar.markdown("### ⚡ Select Sport")
+sport = st.sidebar.radio("Sport", ["🏀 NBA", "⚾ MLB"], horizontal=True, label_visibility="collapsed")
 IS_MLB = sport == "⚾ MLB"
 st.sidebar.divider()
 
@@ -81,87 +116,102 @@ games_df = load_games(conn, league="MLB" if IS_MLB else "NBA")
 players_df = load_mlb_players(conn) if IS_MLB else load_players(conn)
 
 # ── Sidebar: Settings ─────────────────────────────────────────────────────────
-st.sidebar.header("Settings")
-_max_games = 200 if IS_MLB else 100
-num_games = st.sidebar.slider("Number of games", 1, _max_games, 10)
-if IS_MLB:
-    mlb_season = st.sidebar.slider("Season", 2020, 2026, MLB_DEFAULT_SEASON)
+with st.sidebar:
+    st.markdown('<div class="sidebar-section"><div class="sidebar-title">⚙️ Settings</div>', unsafe_allow_html=True)
+    _max_games = 200 if IS_MLB else 100
+    st.caption("📊 Games to analyze")
+    num_games = st.slider("Games", 1, _max_games, 10, label_visibility="collapsed")
+    if IS_MLB:
+        st.caption("📅 Season")
+        mlb_season = st.slider("Season", 2020, 2026, MLB_DEFAULT_SEASON, label_visibility="collapsed")
+    st.markdown('</div>', unsafe_allow_html=True)
 
 st.sidebar.divider()
 
 # ── Sidebar: Scrape Data ──────────────────────────────────────────────────────
-st.sidebar.header("Scrape Data")
-scrape_team_name = st.sidebar.selectbox("Team to scrape", ALL_TEAMS, key="scrape_team")
-_max_scrape = 200 if IS_MLB else 82
-scrape_count = st.sidebar.slider("Games to scrape", 5, _max_scrape, 15, key="scrape_count")
+with st.sidebar:
+    st.markdown('<div class="sidebar-section"><div class="sidebar-title">📊 Scrape Data</div>', unsafe_allow_html=True)
+    st.caption("🏀 Select a team")
+    scrape_team_name = st.selectbox("Team to scrape", ALL_TEAMS, key="scrape_team", label_visibility="collapsed")
+    st.caption("📈 How many games to fetch")
+    _max_scrape = 200 if IS_MLB else 82
+    scrape_count = st.slider("Games to scrape", 5, _max_scrape, 15, key="scrape_count", label_visibility="collapsed")
 
-if st.sidebar.button("Scrape Team"):
-    with st.sidebar.status(f"Scraping {scrape_team_name}...", expanded=True):
-        try:
-            if IS_MLB:
-                g, p = scrape_mlb_team(scrape_team_name, season=mlb_season, last=scrape_count)
-            else:
-                g, p = scrape_team(scrape_team_name, last=scrape_count)
-            st.sidebar.success(f"Saved {len(g)} games, {len(p)} player lines.")
-        except Exception as e:
-            st.sidebar.error(f"Error: {e}")
-    conn.close()
-    conn = init_db()
-    games_df = load_games(conn, league="MLB" if IS_MLB else "NBA")
-    players_df = load_mlb_players(conn) if IS_MLB else load_players(conn)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Scrape Team", use_container_width=True):
+            with st.status(f"Scraping {scrape_team_name}...", expanded=True):
+                try:
+                    if IS_MLB:
+                        g, p = scrape_mlb_team(scrape_team_name, season=mlb_season, last=scrape_count)
+                    else:
+                        g, p = scrape_team(scrape_team_name, last=scrape_count)
+                    st.success(f"Saved {len(g)} games, {len(p)} player lines.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+            conn.close()
+            conn = init_db()
+            games_df = load_games(conn, league="MLB" if IS_MLB else "NBA")
+            players_df = load_mlb_players(conn) if IS_MLB else load_players(conn)
 
-if st.sidebar.button("Scrape All Teams"):
-    with st.sidebar.status(f"Scraping all {len(ALL_TEAMS)} teams...", expanded=True):
-        for i, team in enumerate(ALL_TEAMS):
-            st.write(f"[{i+1}/{len(ALL_TEAMS)}] {team}")
-            try:
-                if IS_MLB:
-                    scrape_mlb_team(team, season=mlb_season, last=scrape_count)
-                else:
-                    scrape_team(team, last=scrape_count)
-            except Exception as e:
-                st.write(f"  Error: {e}")
-        st.sidebar.success("All teams scraped!")
-    conn.close()
-    conn = init_db()
-    games_df = load_games(conn, league="MLB" if IS_MLB else "NBA")
-    players_df = load_mlb_players(conn) if IS_MLB else load_players(conn)
+    with col2:
+        if st.button("Scrape All", use_container_width=True):
+            with st.status(f"Scraping all {len(ALL_TEAMS)} teams...", expanded=True):
+                for i, team in enumerate(ALL_TEAMS):
+                    st.write(f"[{i+1}/{len(ALL_TEAMS)}] {team}")
+                    try:
+                        if IS_MLB:
+                            scrape_mlb_team(team, season=mlb_season, last=scrape_count)
+                        else:
+                            scrape_team(team, last=scrape_count)
+                    except Exception as e:
+                        st.write(f"  Error: {e}")
+                st.success("All teams scraped!")
+            conn.close()
+            conn = init_db()
+            games_df = load_games(conn, league="MLB" if IS_MLB else "NBA")
+            players_df = load_mlb_players(conn) if IS_MLB else load_players(conn)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # ── Sidebar: Injury Report ───────────────────────────────────────────────────
 st.sidebar.divider()
-st.sidebar.header("Injury Report")
-if st.sidebar.button("Refresh Injuries"):
-    with st.sidebar.status("Fetching injury report from ESPN...", expanded=True):
-        league_key = "MLB" if IS_MLB else "NBA"
-        result = scrape_injuries(league_key)
-        st.sidebar.success(f"Updated {len(result)} injury entries.")
-    conn.close()
-    conn = init_db()
+with st.sidebar:
+    st.markdown('<div class="sidebar-section"><div class="sidebar-title">🏥 Injury Report</div>', unsafe_allow_html=True)
+    if st.button("Refresh Injuries", use_container_width=True):
+        with st.status("Fetching injury report from ESPN...", expanded=True):
+            league_key = "MLB" if IS_MLB else "NBA"
+            result = scrape_injuries(league_key)
+            st.success(f"Updated {len(result)} injury entries.")
+        conn.close()
+        conn = init_db()
 
-injuries_df = load_injuries(conn, league="MLB" if IS_MLB else "NBA")
-if not injuries_df.empty:
-    out_count = len(injuries_df[injuries_df["status"].str.lower().isin(["out", "doubtful"])])
-    st.sidebar.caption(f"{len(injuries_df)} players on report ({out_count} Out/Doubtful)")
-else:
-    st.sidebar.caption("No injury data — click Refresh to fetch.")
+    injuries_df = load_injuries(conn, league="MLB" if IS_MLB else "NBA")
+    if not injuries_df.empty:
+        out_count = len(injuries_df[injuries_df["status"].str.lower().isin(["out", "doubtful"])])
+        st.caption(f"📋 {len(injuries_df)} players on report ({out_count} Out/Doubtful)")
+    else:
+        st.caption("No injury data — click Refresh to fetch.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # ── Sidebar: Referee Data ────────────────────────────────────────────────────
 if not IS_MLB:
     st.sidebar.divider()
-    st.sidebar.header("Referee Data")
-    if st.sidebar.button("Refresh Referees"):
-        with st.sidebar.status("Fetching referee stats & assignments...", expanded=True):
-            stats_n, assign_n = scrape_referees()
-            st.sidebar.success(f"Updated {stats_n} ref stats, {assign_n} assignments.")
-        conn.close()
-        conn = init_db()
+    with st.sidebar:
+        st.markdown('<div class="sidebar-section"><div class="sidebar-title">👨‍⚖️ Referee Data</div>', unsafe_allow_html=True)
+        if st.button("Refresh Referees", use_container_width=True):
+            with st.status("Fetching referee stats & assignments...", expanded=True):
+                stats_n, assign_n = scrape_referees()
+                st.success(f"Updated {stats_n} ref stats, {assign_n} assignments.")
+            conn.close()
+            conn = init_db()
 
-    ref_stats_df = load_referee_stats(conn)
-    ref_assign_df = load_referee_assignments(conn)
-    if not ref_stats_df.empty:
-        st.sidebar.caption(f"{len(ref_stats_df)} referees tracked, {len(ref_assign_df)} assignments today")
-    else:
-        st.sidebar.caption("No referee data — click Refresh to fetch.")
+        ref_stats_df = load_referee_stats(conn)
+        ref_assign_df = load_referee_assignments(conn)
+        if not ref_stats_df.empty:
+            st.caption(f"📝 {len(ref_stats_df)} referees tracked, {len(ref_assign_df)} today")
+        else:
+            st.caption("No referee data — click Refresh to fetch.")
+        st.markdown('</div>', unsafe_allow_html=True)
 else:
     ref_stats_df = pd.DataFrame()
     ref_assign_df = pd.DataFrame()
@@ -169,40 +219,46 @@ else:
 st.sidebar.divider()
 
 # ── Sidebar: Watchlist ────────────────────────────────────────────────────────
-st.sidebar.header("Watchlist")
-wl_key = "mlb_watchlist" if IS_MLB else "nba_watchlist"
-if wl_key not in st.session_state:
-    st.session_state[wl_key] = []
+with st.sidebar:
+    st.markdown('<div class="sidebar-section"><div class="sidebar-title">⭐ Watchlist</div>', unsafe_allow_html=True)
+    wl_key = "mlb_watchlist" if IS_MLB else "nba_watchlist"
+    if wl_key not in st.session_state:
+        st.session_state[wl_key] = []
 
-wl_add = st.sidebar.selectbox("Add team to watchlist", [""] + ALL_TEAMS, key=f"wl_add_{sport}")
-if st.sidebar.button("Add") and wl_add and wl_add not in st.session_state[wl_key]:
-    st.session_state[wl_key].append(wl_add)
+    st.caption("📌 Track your favorite teams")
+    wl_add = st.selectbox("Add team to watchlist", [""] + ALL_TEAMS, key=f"wl_add_{sport}", label_visibility="collapsed")
+    if st.button("➕ Add to Watchlist", use_container_width=True) and wl_add and wl_add not in st.session_state[wl_key]:
+        st.session_state[wl_key].append(wl_add)
 
-for wl_team in list(st.session_state[wl_key]):
-    wl_col1, wl_col2 = st.sidebar.columns([3, 1])
-    if not games_df.empty:
-        tg = games_df[(games_df["home_team"] == wl_team) | (games_df["away_team"] == wl_team)]
-        if not tg.empty:
-            latest = tg.sort_values("date", ascending=False).iloc[0]
-            is_home = latest["home_team"] == wl_team
-            scored = latest["home_score"] if is_home else latest["away_score"]
-            conceded = latest["away_score"] if is_home else latest["home_score"]
-            result = "W" if scored > conceded else "L"
-            sc, st_type = win_streak(wl_team, games_df)
-            streak_str = f"{st_type}{sc}"
-            color = "🟢" if result == "W" else "🔴"
-            wl_col1.markdown(f"{color} **{wl_team.split()[-1]}** {int(scored)}-{int(conceded)} · {streak_str}")
-        else:
-            wl_col1.markdown(f"**{wl_team.split()[-1]}** — no data")
+    if st.session_state[wl_key]:
+        for wl_team in list(st.session_state[wl_key]):
+            wl_col1, wl_col2 = st.columns([3, 1])
+            if not games_df.empty:
+                tg = games_df[(games_df["home_team"] == wl_team) | (games_df["away_team"] == wl_team)]
+                if not tg.empty:
+                    latest = tg.sort_values("date", ascending=False).iloc[0]
+                    is_home = latest["home_team"] == wl_team
+                    scored = latest["home_score"] if is_home else latest["away_score"]
+                    conceded = latest["away_score"] if is_home else latest["home_score"]
+                    result = "W" if scored > conceded else "L"
+                    sc, st_type = win_streak(wl_team, games_df)
+                    streak_str = f"{st_type}{sc}"
+                    color = "🟢" if result == "W" else "🔴"
+                    wl_col1.markdown(f"{color} **{wl_team.split()[-1]}** {int(scored)}-{int(conceded)} · {streak_str}")
+                else:
+                    wl_col1.markdown(f"**{wl_team.split()[-1]}** — no data")
+            else:
+                wl_col1.markdown(f"**{wl_team}**")
+            if wl_col2.button("✕", key=f"rm_{sport}_{wl_team}"):
+                st.session_state[wl_key].remove(wl_team)
+                st.rerun()
     else:
-        wl_col1.markdown(f"**{wl_team}**")
-    if wl_col2.button("✕", key=f"rm_{sport}_{wl_team}"):
-        st.session_state[wl_key].remove(wl_team)
-        st.rerun()
+        st.caption("No teams added yet")
+    st.markdown('</div>', unsafe_allow_html=True)
 
 st.sidebar.divider()
 
-if st.sidebar.button("Update All Teams", type="primary"):
+if st.sidebar.button("🔄 Update All Teams", use_container_width=True, type="primary"):
     with st.sidebar.status("Checking for new games...", expanded=True):
         total_new = 0
         for i, team in enumerate(ALL_TEAMS):
@@ -224,10 +280,118 @@ if st.sidebar.button("Update All Teams", type="primary"):
     players_df = load_mlb_players(conn) if IS_MLB else load_players(conn)
 
 # ── Main tabs ─────────────────────────────────────────────────────────────────
-tab_games, tab_team, tab_player, tab_pred, tab_top, tab_standings, tab_ai = st.tabs(
-    ["Game Results", "Team Form", "Player Stats", "Predictions",
+tab_home, tab_games, tab_team, tab_player, tab_pred, tab_top, tab_standings, tab_ai = st.tabs(
+    ["Home", "Game Results", "Team Form", "Player Stats", "Predictions",
      "Top Performers", "Standings", "AI Scout"]
 )
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Tab 0: Home Dashboard
+# ═════════════════════════════════════════════════════════════════════════════
+with tab_home:
+    if IS_MLB:
+        st.info("Home dashboard is NBA only. Switch to the NBA sport selector.")
+    else:
+        import altair as alt
+
+        if games_df.empty and players_df.empty:
+            st.info("📊 Scrape some teams first to see the dashboard!")
+        else:
+            # ── Team Streaks (full width chart) ──────────────────────────────────
+            st.markdown("**Team Streaks**")
+            if not games_df.empty:
+                all_teams_in_db = sorted(
+                    set(games_df["home_team"].tolist() + games_df["away_team"].tolist())
+                )
+                streak_rows = []
+                for t in all_teams_in_db:
+                    sc, st_type = win_streak(t, games_df)
+                    streak_rows.append({"Team": t, "Streak": sc, "Type": st_type, "Label": f"{st_type}{sc}"})
+                streak_df = pd.DataFrame(streak_rows)
+                streak_df["Signed"] = streak_df.apply(
+                    lambda r: r["Streak"] if r["Type"] == "W" else -r["Streak"], axis=1
+                )
+                streak_df = streak_df.sort_values("Signed", ascending=False)
+
+                streak_chart = (
+                    alt.Chart(streak_df)
+                    .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
+                    .encode(
+                        x=alt.X("Team:N", sort=alt.SortField("Signed", order="descending"),
+                                 axis=alt.Axis(labelAngle=-40, labelFontSize=11)),
+                        y=alt.Y("Signed:Q", title="Streak (+ wins, - losses)"),
+                        color=alt.condition(
+                            alt.datum.Signed > 0,
+                            alt.value("#10b981"),
+                            alt.value("#ef4444"),
+                        ),
+                        tooltip=["Team", "Label"],
+                    )
+                    .properties(height=300)
+                )
+                st.altair_chart(streak_chart, use_container_width=True)
+
+            st.divider()
+
+            # ── League Leaders (full width with tabs) ──────────────────────────
+            st.markdown("**League Leaders**")
+            if not players_df.empty:
+                stat_cols_avail = [c for c in ["points", "assists", "rebounds"] if c in players_df.columns]
+                agg = players_df.groupby(["name", "team"])[stat_cols_avail].mean().round(1).reset_index()
+
+                leader_tab_pts, leader_tab_ast, leader_tab_reb = st.tabs(["Points", "Assists", "Rebounds"])
+
+                for tab_obj, col_name, label in [
+                    (leader_tab_pts, "points", "Avg Points"),
+                    (leader_tab_ast, "assists", "Avg Assists"),
+                    (leader_tab_reb, "rebounds", "Avg Rebounds"),
+                ]:
+                    if col_name not in agg.columns:
+                        continue
+                    with tab_obj:
+                        top10 = agg.nlargest(10, col_name)[["name", "team", col_name]].reset_index(drop=True)
+                        top10.columns = ["Player", "Team", label]
+                        chart = (
+                            alt.Chart(top10)
+                            .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+                            .encode(
+                                x=alt.X("Player:N", sort="-y", axis=alt.Axis(labelAngle=-35)),
+                                y=alt.Y(f"{label}:Q", title=label),
+                                color=alt.Color("Team:N", legend=None),
+                                tooltip=["Player", "Team", label],
+                            )
+                            .properties(height=280)
+                        )
+                        st.altair_chart(chart, use_container_width=True)
+            else:
+                st.caption("No player data yet — scrape some teams first.")
+
+            st.divider()
+
+            # ── Standings (full width) ────────────────────────────────────────
+            st.markdown("**Standings**")
+            if not games_df.empty:
+                standings_df = season_standings(games_df)
+                top_teams = standings_df.head(20)
+
+                chart_s = (
+                    alt.Chart(top_teams)
+                    .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+                    .encode(
+                        x=alt.X("Team:N", sort="-y", axis=alt.Axis(labelAngle=-40)),
+                        y=alt.Y("Win%:Q", title="Win %", scale=alt.Scale(domain=[0, 100])),
+                        color=alt.condition(
+                            alt.datum["Net Rtg"] > 0,
+                            alt.value("#10b981"),
+                            alt.value("#ef4444"),
+                        ),
+                        tooltip=["Team", "W", "L", "Win%", "Net Rtg", "Streak"],
+                    )
+                    .properties(height=300)
+                )
+                st.altair_chart(chart_s, use_container_width=True)
+            else:
+                st.caption("No game data yet — scrape some teams first.")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Tab 1: Game Results
