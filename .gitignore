@@ -16,3 +16,4 @@ ios/*.xcodeproj/project.xcworkspace/
 ios/*.xcodeproj/xcuserdata/
 ios/DerivedData/
 ios/*.xcworkspace/
+.claude/
