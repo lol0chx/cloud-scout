@@ -32,9 +32,9 @@ iOS APP (Swift/Xcode):
 
   Note: ngrok URL changes every time you restart it (free plan).
         Update API_BASE in ios/CloudScout/APIClient.swift each time.
-  Note: Current ngrok URL: https://REDACTED.ngrok-free.dev
 
 python3 -m streamlit run app.py
+ANTHROPIC_API_KEY=sk-ant-... venv/bin/python3 -m streamlit run app.py
 
 TEAM STATS (recent form, averages, rolling performance):
   python main.py --team "LA Lakers" --last 5
