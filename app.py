@@ -286,112 +286,540 @@ tab_home, tab_games, tab_team, tab_player, tab_pred, tab_top, tab_standings, tab
 )
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Tab 0: Home Dashboard
+# Tab 0: Home — Instagram-style feed of games and standout performances
 # ═════════════════════════════════════════════════════════════════════════════
 with tab_home:
-    if IS_MLB:
-        st.info("Home dashboard is NBA only. Switch to the NBA sport selector.")
-    else:
-        import altair as alt
+    st.markdown("""
+    <style>
+    .ig-wrap { max-width: 560px; margin: 0 auto; padding-top: 4px; }
+    .ig-stories {
+        display: flex; gap: 14px; padding: 10px 4px 18px 4px;
+        overflow-x: auto; border-bottom: 1px solid #f1f5f9; margin-bottom: 20px;
+    }
+    .ig-story { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; cursor: pointer; }
+    .ig-story-ring {
+        width: 62px; height: 62px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 24px; color: #fff; font-weight: 800;
+        background: linear-gradient(135deg, #fdba74, #fb7185, #a855f7);
+        padding: 3px;
+    }
+    .ig-story-ring-inner {
+        width: 100%; height: 100%; background: #fff; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+    }
+    .ig-story-label { font-size: 11px; color: #334155; margin-top: 6px; font-weight: 600; }
 
-        if games_df.empty and players_df.empty:
-            st.info("📊 Scrape some teams first to see the dashboard!")
-        else:
-            # ── Team Streaks (full width chart) ──────────────────────────────────
-            st.markdown("**Team Streaks**")
-            if not games_df.empty:
-                all_teams_in_db = sorted(
-                    set(games_df["home_team"].tolist() + games_df["away_team"].tolist())
-                )
-                streak_rows = []
-                for t in all_teams_in_db:
-                    sc, st_type = win_streak(t, games_df)
-                    streak_rows.append({"Team": t, "Streak": sc, "Type": st_type, "Label": f"{st_type}{sc}"})
-                streak_df = pd.DataFrame(streak_rows)
-                streak_df["Signed"] = streak_df.apply(
-                    lambda r: r["Streak"] if r["Type"] == "W" else -r["Streak"], axis=1
-                )
-                streak_df = streak_df.sort_values("Signed", ascending=False)
+    .ig-post {
+        background: #fff; border: 1px solid #e2e8f0; border-radius: 14px;
+        margin-bottom: 18px; overflow: hidden;
+        box-shadow: 0 1px 3px rgba(15,23,42,0.04);
+    }
+    .ig-head {
+        display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+        border-bottom: 1px solid #f1f5f9;
+    }
+    .ig-avatar {
+        width: 34px; height: 34px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        color: #fff; font-weight: 800; font-size: 14px;
+    }
+    .ava-nba { background: linear-gradient(135deg, #1d4ed8, #7c3aed); }
+    .ava-mlb { background: linear-gradient(135deg, #b91c1c, #ea580c); }
+    .ava-star { background: linear-gradient(135deg, #f59e0b, #ef4444); }
+    .ava-leader { background: linear-gradient(135deg, #0ea5e9, #22c55e); }
+    .ig-handle { font-weight: 700; font-size: 13px; color: #0f172a; line-height: 1.1; }
+    .ig-sub { font-size: 11px; color: #64748b; }
 
-                streak_chart = (
-                    alt.Chart(streak_df)
-                    .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
-                    .encode(
-                        x=alt.X("Team:N", sort=alt.SortField("Signed", order="descending"),
-                                 axis=alt.Axis(labelAngle=-40, labelFontSize=11)),
-                        y=alt.Y("Signed:Q", title="Streak (+ wins, - losses)"),
-                        color=alt.condition(
-                            alt.datum.Signed > 0,
-                            alt.value("#10b981"),
-                            alt.value("#ef4444"),
-                        ),
-                        tooltip=["Team", "Label"],
-                    )
-                    .properties(height=300)
-                )
-                st.altair_chart(streak_chart, use_container_width=True)
+    .ig-image {
+        padding: 26px 20px; color: #fff;
+        display: flex; flex-direction: column; justify-content: center; align-items: center;
+        min-height: 220px; text-align: center;
+    }
+    .img-game-nba { background: radial-gradient(circle at 30% 20%, #3b82f6, #1e1b4b 75%); }
+    .img-game-mlb { background: radial-gradient(circle at 70% 20%, #f97316, #7f1d1d 75%); }
+    .img-perf { background: radial-gradient(circle at 50% 30%, #f59e0b, #7c2d12 80%); }
+    .img-perf-triple { background: radial-gradient(circle at 50% 30%, #facc15, #7c2d12 80%); }
+    .img-perf-pitch { background: radial-gradient(circle at 50% 30%, #0ea5e9, #0c4a6e 80%); }
+    .img-leader { background: radial-gradient(circle at 40% 30%, #22c55e, #064e3b 80%); }
 
-            st.divider()
+    .scoreline { display: flex; justify-content: space-around; align-items: center; width: 100%; gap: 12px; }
+    .score-team { flex: 1; }
+    .score-team-name { font-size: 14px; font-weight: 600; opacity: 0.9; margin-bottom: 4px; }
+    .score-big { font-size: 52px; font-weight: 900; line-height: 1; }
+    .score-big.dim { opacity: 0.55; }
+    .score-vs { font-size: 14px; font-weight: 700; opacity: 0.7; }
+    .game-meta { font-size: 11px; opacity: 0.75; margin-top: 16px; text-transform: uppercase; letter-spacing: 1.2px; }
+    .game-winner { font-size: 13px; margin-top: 8px; font-weight: 700; }
 
-            # ── League Leaders (full width with tabs) ──────────────────────────
-            st.markdown("**League Leaders**")
-            if not players_df.empty:
-                stat_cols_avail = [c for c in ["points", "assists", "rebounds"] if c in players_df.columns]
-                agg = players_df.groupby(["name", "team"])[stat_cols_avail].mean().round(1).reset_index()
+    .perf-headline { font-size: 11px; font-weight: 800; letter-spacing: 1.5px; opacity: 0.9; margin-bottom: 10px; }
+    .perf-name { font-size: 22px; font-weight: 800; margin-bottom: 2px; }
+    .perf-team-row { font-size: 12px; opacity: 0.85; margin-bottom: 14px; }
+    .perf-stats { display: flex; gap: 18px; margin-top: 6px; justify-content: center; flex-wrap: wrap; }
+    .perf-stat-box { display: flex; flex-direction: column; align-items: center; min-width: 60px; }
+    .perf-stat-num { font-size: 28px; font-weight: 900; line-height: 1; }
+    .perf-stat-lbl { font-size: 10px; letter-spacing: 1.2px; margin-top: 4px; opacity: 0.85; text-transform: uppercase; }
 
-                leader_tab_pts, leader_tab_ast, leader_tab_reb = st.tabs(["Points", "Assists", "Rebounds"])
+    .leader-title { font-size: 11px; font-weight: 800; letter-spacing: 1.5px; opacity: 0.9; margin-bottom: 10px; }
+    .leader-item { font-size: 14px; margin: 4px 0; }
 
-                for tab_obj, col_name, label in [
-                    (leader_tab_pts, "points", "Avg Points"),
-                    (leader_tab_ast, "assists", "Avg Assists"),
-                    (leader_tab_reb, "rebounds", "Avg Rebounds"),
-                ]:
-                    if col_name not in agg.columns:
-                        continue
-                    with tab_obj:
-                        top10 = agg.nlargest(10, col_name)[["name", "team", col_name]].reset_index(drop=True)
-                        top10.columns = ["Player", "Team", label]
-                        chart = (
-                            alt.Chart(top10)
-                            .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
-                            .encode(
-                                x=alt.X("Player:N", sort="-y", axis=alt.Axis(labelAngle=-35)),
-                                y=alt.Y(f"{label}:Q", title=label),
-                                color=alt.Color("Team:N", legend=None),
-                                tooltip=["Player", "Team", label],
-                            )
-                            .properties(height=280)
-                        )
-                        st.altair_chart(chart, use_container_width=True)
-            else:
-                st.caption("No player data yet — scrape some teams first.")
+    .ig-actions { padding: 10px 14px 4px 14px; font-size: 18px; color: #0f172a; }
+    .ig-caption { padding: 0 14px 10px 14px; font-size: 13px; color: #0f172a; line-height: 1.4; }
+    .ig-caption b { font-weight: 700; }
+    .ig-footer { padding: 0 14px 12px 14px; font-size: 10px; color: #94a3b8; letter-spacing: 0.8px; text-transform: uppercase; }
 
-            st.divider()
+    div[data-testid="stRadio"] > label { display: none; }
 
-            # ── Standings (full width) ────────────────────────────────────────
-            st.markdown("**Standings**")
-            if not games_df.empty:
-                standings_df = season_standings(games_df)
-                top_teams = standings_df.head(20)
+    button { font-weight: 600 !important; border-radius: 8px !important; }
+    [data-testid="baseButton-secondary"] {
+        border: 1px solid #e2e8f0 !important;
+        color: #64748b !important;
+        transition: all 0.15s ease !important;
+    }
+    [data-testid="baseButton-secondary"]:hover {
+        background: #f8fafc !important;
+        border-color: #cbd5e1 !important;
+        color: #334155 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-                chart_s = (
-                    alt.Chart(top_teams)
-                    .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
-                    .encode(
-                        x=alt.X("Team:N", sort="-y", axis=alt.Axis(labelAngle=-40)),
-                        y=alt.Y("Win%:Q", title="Win %", scale=alt.Scale(domain=[0, 100])),
-                        color=alt.condition(
-                            alt.datum["Net Rtg"] > 0,
-                            alt.value("#10b981"),
-                            alt.value("#ef4444"),
-                        ),
-                        tooltip=["Team", "W", "L", "Win%", "Net Rtg", "Streak"],
-                    )
-                    .properties(height=300)
-                )
-                st.altair_chart(chart_s, use_container_width=True)
-            else:
-                st.caption("No game data yet — scrape some teams first.")
+    # Load both leagues + both player tables so the feed works regardless of sidebar toggle
+    nba_home_df = load_games(conn, league="NBA")
+    mlb_home_df = load_games(conn, league="MLB")
+    nba_players_home = load_players(conn)
+    mlb_players_home = load_mlb_players(conn)
+
+    def _fmt_date(d):
+        try:
+            return pd.to_datetime(d).strftime("%b %d")
+        except Exception:
+            return str(d)
+
+    def _fmt_rel(d):
+        try:
+            days = (pd.Timestamp.now().normalize() - pd.to_datetime(d).normalize()).days
+            if days == 0: return "Today"
+            if days == 1: return "Yesterday"
+            if days < 7: return f"{days}d ago"
+            return pd.to_datetime(d).strftime("%b %d")
+        except Exception:
+            return str(d)
+
+    def _nba_perf_tag(pts, reb, ast, stl, blk):
+        dd = sum(1 for v in [pts, reb, ast, stl, blk] if v >= 10)
+        if dd >= 3: return "TRIPLE-DOUBLE", "img-perf-triple"
+        if dd == 2 and pts >= 20: return "DOUBLE-DOUBLE", "img-perf"
+        if pts >= 40: return f"{pts}-POINT EXPLOSION", "img-perf"
+        if pts >= 30: return f"{pts}-POINT NIGHT", "img-perf"
+        return None, None
+
+    # Build a unified list of posts from both sports
+    posts = []
+
+    # NBA: one game post per recent game + standout performance posts
+    for _, g in nba_home_df.sort_values("date", ascending=False).head(4).iterrows():
+        posts.append({"type": "nba_game", "date": g["date"], "data": g})
+        gp = nba_players_home[nba_players_home["game_id"] == g["id"]]
+        for _, p in gp.iterrows():
+            pts = int(p.get("points") or 0)
+            reb = int(p.get("rebounds") or 0)
+            ast = int(p.get("assists") or 0)
+            stl = int(p.get("steals") or 0)
+            blk = int(p.get("blocks") or 0)
+            tag, img_cls = _nba_perf_tag(pts, reb, ast, stl, blk)
+            if tag:
+                posts.append({
+                    "type": "nba_perf", "date": g["date"], "tag": tag, "img_cls": img_cls,
+                    "player": p["name"], "team": p["team"], "opponent": g["away_team"] if p["team"] == g["home_team"] else g["home_team"],
+                    "pts": pts, "reb": reb, "ast": ast, "stl": stl, "blk": blk,
+                })
+
+    # MLB: game + batter + pitcher gems
+    for _, g in mlb_home_df.sort_values("date", ascending=False).head(4).iterrows():
+        posts.append({"type": "mlb_game", "date": g["date"], "data": g})
+        gp = mlb_players_home[mlb_players_home["game_id"] == g["id"]]
+        for _, p in gp.iterrows():
+            if p.get("role") == "batter":
+                hr = int(p.get("home_runs") or 0)
+                hits = int(p.get("hits") or 0)
+                rbi = int(p.get("rbi") or 0)
+                runs = int(p.get("runs") or 0)
+                ab = int(p.get("at_bats") or 0)
+                tag = None
+                img_cls = "img-perf"
+                if hr >= 2:
+                    tag = f"{hr}-HOMER GAME"; img_cls = "img-perf-triple"
+                elif hits >= 4:
+                    tag = f"{hits}-HIT GAME"
+                elif rbi >= 5:
+                    tag = f"{rbi}-RBI NIGHT"
+                if tag:
+                    opp = g["away_team"] if p["team"] == g["home_team"] else g["home_team"]
+                    posts.append({
+                        "type": "mlb_bat", "date": g["date"], "tag": tag, "img_cls": img_cls,
+                        "player": p["name"], "team": p["team"], "opponent": opp,
+                        "hits": hits, "ab": ab, "hr": hr, "rbi": rbi, "runs": runs,
+                    })
+            else:  # pitcher
+                ip = float(p.get("innings_pitched") or 0)
+                er = int(p.get("earned_runs") or 0)
+                k = int(p.get("strikeouts_pitched") or 0)
+                ha = int(p.get("hits_allowed") or 0)
+                bb = int(p.get("walks_allowed") or 0)
+                tag = None
+                if k >= 10:
+                    tag = f"{k}-STRIKEOUT GEM"
+                elif ip >= 7 and er <= 1:
+                    tag = "DOMINANT OUTING"
+                if tag:
+                    opp = g["away_team"] if p["team"] == g["home_team"] else g["home_team"]
+                    posts.append({
+                        "type": "mlb_pit", "date": g["date"], "tag": tag, "img_cls": "img-perf-pitch",
+                        "player": p["name"], "team": p["team"], "opponent": opp,
+                        "ip": ip, "er": er, "k": k, "ha": ha, "bb": bb,
+                    })
+
+    # Leader post — top scorer across the recent NBA games (if any)
+    leader_post = None
+    if not nba_players_home.empty and not nba_home_df.empty:
+        recent_ids = set(nba_home_df.sort_values("date", ascending=False).head(6)["id"].tolist())
+        rp = nba_players_home[nba_players_home["game_id"].isin(recent_ids)]
+        if not rp.empty:
+            top3 = rp.groupby(["name", "team"], as_index=False)["points"].mean().round(1).nlargest(3, "points")
+            if not top3.empty:
+                leader_post = {
+                    "type": "nba_leaders", "date": nba_home_df["date"].max(),
+                    "items": top3.to_dict("records"),
+                }
+
+    posts.sort(key=lambda x: x["date"], reverse=True)
+    if leader_post:
+        posts.insert(min(2, len(posts)), leader_post)
+
+    # ── Filter bar (Instagram-style stories) ─────────────────────────────────
+    st.markdown('<div class="ig-wrap">', unsafe_allow_html=True)
+
+    category = st.radio(
+        "Filter",
+        ["All", "🏀 NBA", "⚾ MLB", "🔥 Performances", "📊 Games"],
+        horizontal=True, label_visibility="collapsed", key="home_filter",
+    )
+
+    st.markdown("""
+    <div class="ig-stories">
+      <div class="ig-story"><div class="ig-story-ring"><div class="ig-story-ring-inner">🏟</div></div><div class="ig-story-label">For You</div></div>
+      <div class="ig-story"><div class="ig-story-ring"><div class="ig-story-ring-inner">🏀</div></div><div class="ig-story-label">NBA</div></div>
+      <div class="ig-story"><div class="ig-story-ring"><div class="ig-story-ring-inner">⚾</div></div><div class="ig-story-label">MLB</div></div>
+      <div class="ig-story"><div class="ig-story-ring"><div class="ig-story-ring-inner">🔥</div></div><div class="ig-story-label">Hot</div></div>
+      <div class="ig-story"><div class="ig-story-ring"><div class="ig-story-ring-inner">⭐</div></div><div class="ig-story-label">Stars</div></div>
+      <div class="ig-story"><div class="ig-story-ring"><div class="ig-story-ring-inner">📊</div></div><div class="ig-story-label">Leaders</div></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Filter
+    def _keep(post):
+        t = post["type"]
+        if category == "All": return True
+        if category == "🏀 NBA": return t.startswith("nba")
+        if category == "⚾ MLB": return t.startswith("mlb")
+        if category == "🔥 Performances": return t in ("nba_perf", "mlb_bat", "mlb_pit")
+        if category == "📊 Games": return t in ("nba_game", "mlb_game")
+        return True
+
+    filtered_posts = [p for p in posts if _keep(p)]
+
+    if not filtered_posts:
+        st.info("📊 No posts for this filter — scrape some teams from the sidebar to fill your feed.")
+
+    # ── Render each post ─────────────────────────────────────────────────────
+    for post in filtered_posts:
+        t = post["type"]
+
+        if t == "nba_game":
+            g = post["data"]
+            home, away = g["home_team"], g["away_team"]
+            hs, as_ = int(g["home_score"]), int(g["away_score"])
+            home_win = hs > as_
+            winner = home if home_win else away
+            margin = abs(hs - as_)
+            as_dim = "dim" if home_win else ""
+            hs_dim = "" if home_win else "dim"
+            matchup = f"{away.split()[-1]} vs {home.split()[-1]}"
+            st.markdown(f"""
+            <div class="ig-post">
+              <div class="ig-head">
+                <div class="ig-avatar ava-nba">🏀</div>
+                <div>
+                  <div class="ig-handle">{matchup}</div>
+                  <div class="ig-sub">Final · {_fmt_rel(g["date"])}</div>
+                </div>
+              </div>
+              <div class="ig-image img-game-nba">
+                <div class="scoreline">
+                  <div class="score-team">
+                    <div class="score-team-name">{away}</div>
+                    <div class="score-big {as_dim}">{as_}</div>
+                  </div>
+                  <div class="score-vs">@</div>
+                  <div class="score-team">
+                    <div class="score-team-name">{home}</div>
+                    <div class="score-big {hs_dim}">{hs}</div>
+                  </div>
+                </div>
+                <div class="game-winner">🏆 {winner} win</div>
+                <div class="game-meta">Final · Margin {margin}</div>
+              </div>
+              <div class="ig-actions">❤️ &nbsp; 💬 &nbsp; 🔁 &nbsp; 🔖</div>
+              <div class="ig-caption"><b>{matchup}</b> — {winner} take it by <b>{margin}</b>! 🏆</div>
+              <div class="ig-footer">{_fmt_date(g["date"])}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        elif t == "mlb_game":
+            g = post["data"]
+            home, away = g["home_team"], g["away_team"]
+            hs, as_ = int(g["home_score"]), int(g["away_score"])
+            home_win = hs > as_
+            winner = home if home_win else away
+            margin = abs(hs - as_)
+            as_dim = "dim" if home_win else ""
+            hs_dim = "" if home_win else "dim"
+            matchup = f"{away.split()[-1]} vs {home.split()[-1]}"
+            st.markdown(f"""
+            <div class="ig-post">
+              <div class="ig-head">
+                <div class="ig-avatar ava-mlb">⚾</div>
+                <div>
+                  <div class="ig-handle">{matchup}</div>
+                  <div class="ig-sub">Final · {_fmt_rel(g["date"])}</div>
+                </div>
+              </div>
+              <div class="ig-image img-game-mlb">
+                <div class="scoreline">
+                  <div class="score-team">
+                    <div class="score-team-name">{away}</div>
+                    <div class="score-big {as_dim}">{as_}</div>
+                  </div>
+                  <div class="score-vs">@</div>
+                  <div class="score-team">
+                    <div class="score-team-name">{home}</div>
+                    <div class="score-big {hs_dim}">{hs}</div>
+                  </div>
+                </div>
+                <div class="game-winner">🏆 {winner} win</div>
+                <div class="game-meta">Final · {margin}-run margin</div>
+              </div>
+              <div class="ig-actions">❤️ &nbsp; 💬 &nbsp; 🔁 &nbsp; 🔖</div>
+              <div class="ig-caption"><b>{matchup}</b> — {winner} wins {hs if home_win else as_}–{as_ if home_win else hs}! ⚾</div>
+              <div class="ig-footer">{_fmt_date(g["date"])}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        elif t == "nba_perf":
+            team_short = post["team"].split()[-1]
+            matchup = f"{team_short} vs {post['opponent'].split()[-1]}"
+            st.markdown(f"""
+            <div class="ig-post">
+              <div class="ig-head">
+                <div class="ig-avatar ava-star">⭐</div>
+                <div>
+                  <div class="ig-handle">{matchup}</div>
+                  <div class="ig-sub">Standout · {_fmt_rel(post["date"])}</div>
+                </div>
+              </div>
+              <div class="ig-image {post["img_cls"]}">
+                <div class="perf-headline">{post["tag"]}</div>
+                <div class="perf-name">{post["player"]}</div>
+                <div class="perf-team-row">{post["team"]} vs {post["opponent"]}</div>
+                <div class="perf-stats">
+                  <div class="perf-stat-box"><div class="perf-stat-num">{post["pts"]}</div><div class="perf-stat-lbl">PTS</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{post["reb"]}</div><div class="perf-stat-lbl">REB</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{post["ast"]}</div><div class="perf-stat-lbl">AST</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{post["stl"]}</div><div class="perf-stat-lbl">STL</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{post["blk"]}</div><div class="perf-stat-lbl">BLK</div></div>
+                </div>
+              </div>
+              <div class="ig-actions">❤️ &nbsp; 💬 &nbsp; 🔁 &nbsp; 🔖</div>
+              <div class="ig-caption"><b>{post["player"]}</b> — {post["tag"]} vs {post["opponent"]}! 🔥 #{post["tag"].replace(" ", "").replace("-", "")}</div>
+              <div class="ig-footer">{_fmt_date(post["date"])}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        elif t == "mlb_bat":
+            team_short = post["team"].split()[-1]
+            matchup = f"{team_short} vs {post['opponent'].split()[-1]}"
+            st.markdown(f"""
+            <div class="ig-post">
+              <div class="ig-head">
+                <div class="ig-avatar ava-star">🔥</div>
+                <div>
+                  <div class="ig-handle">{matchup}</div>
+                  <div class="ig-sub">Hot Bat · {_fmt_rel(post["date"])}</div>
+                </div>
+              </div>
+              <div class="ig-image {post["img_cls"]}">
+                <div class="perf-headline">{post["tag"]}</div>
+                <div class="perf-name">{post["player"]}</div>
+                <div class="perf-team-row">{post["team"]} vs {post["opponent"]}</div>
+                <div class="perf-stats">
+                  <div class="perf-stat-box"><div class="perf-stat-num">{post["hits"]}/{post["ab"]}</div><div class="perf-stat-lbl">H/AB</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{post["hr"]}</div><div class="perf-stat-lbl">HR</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{post["rbi"]}</div><div class="perf-stat-lbl">RBI</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{post["runs"]}</div><div class="perf-stat-lbl">R</div></div>
+                </div>
+              </div>
+              <div class="ig-actions">❤️ &nbsp; 💬 &nbsp; 🔁 &nbsp; 🔖</div>
+              <div class="ig-caption"><b>{post["player"]}</b> — {post["tag"]} vs {post["opponent"]}! 🔥</div>
+              <div class="ig-footer">{_fmt_date(post["date"])}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        elif t == "mlb_pit":
+            team_short = post["team"].split()[-1]
+            matchup = f"{team_short} vs {post['opponent'].split()[-1]}"
+            st.markdown(f"""
+            <div class="ig-post">
+              <div class="ig-head">
+                <div class="ig-avatar ava-star">🎯</div>
+                <div>
+                  <div class="ig-handle">{matchup}</div>
+                  <div class="ig-sub">Gem on Mound · {_fmt_rel(post["date"])}</div>
+                </div>
+              </div>
+              <div class="ig-image {post["img_cls"]}">
+                <div class="perf-headline">{post["tag"]}</div>
+                <div class="perf-name">{post["player"]}</div>
+                <div class="perf-team-row">{post["team"]} vs {post["opponent"]}</div>
+                <div class="perf-stats">
+                  <div class="perf-stat-box"><div class="perf-stat-num">{post["ip"]}</div><div class="perf-stat-lbl">IP</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{post["k"]}</div><div class="perf-stat-lbl">K</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{post["er"]}</div><div class="perf-stat-lbl">ER</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{post["ha"]}</div><div class="perf-stat-lbl">H</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{post["bb"]}</div><div class="perf-stat-lbl">BB</div></div>
+                </div>
+              </div>
+              <div class="ig-actions">❤️ &nbsp; 💬 &nbsp; 🔁 &nbsp; 🔖</div>
+              <div class="ig-caption"><b>{post["player"]}</b> — {post["tag"]} vs {post["opponent"]}! 🎯</div>
+              <div class="ig-footer">{_fmt_date(post["date"])}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        elif t == "nba_leaders":
+            # Initialize session state for this post
+            post_key = "nba_leaders_post"
+            if post_key not in st.session_state:
+                st.session_state[post_key] = {"likes": 0, "liked": False, "show_comments": False, "comments": []}
+
+            medals = ["🥇", "🥈", "🥉"]
+            st.markdown(f"""
+            <div class="ig-post" style="margin-bottom: 18px;">
+              <div class="ig-head">
+                <div class="ig-avatar ava-leader" style="font-size: 16px;">📊</div>
+                <div>
+                  <div class="ig-handle">stat_central</div>
+                  <div class="ig-sub">Leaderboard · Last 6 games</div>
+                </div>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Display each player in a nice card
+            for i, item in enumerate(post["items"]):
+                col1, col2 = st.columns([0.15, 0.85])
+                with col1:
+                    st.markdown(f"""
+                    <div style="font-size: 28px; text-align: center; margin-top: 8px;">
+                        {medals[i]}
+                    </div>
+                    """, unsafe_allow_html=True)
+                with col2:
+                    st.markdown(f"""
+                    <div style="background: #f8fafc; border-radius: 10px; padding: 12px 14px; margin-bottom: 10px;">
+                        <div style="font-weight: 700; font-size: 15px; color: #0f172a; margin-bottom: 3px;">
+                            {item["name"]}
+                        </div>
+                        <div style="font-size: 13px; color: #64748b; margin-bottom: 6px;">
+                            {item["team"]}
+                        </div>
+                        <div style="font-size: 20px; font-weight: 900; color: #3b82f6;">
+                            {item["points"]}<span style="font-size: 12px; color: #94a3b8; font-weight: 600;"> PPG</span>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            # Actions row
+            st.markdown("""
+            <div style="border-top: 1px solid #f1f5f9; padding-top: 10px; margin-top: 10px;"></div>
+            """, unsafe_allow_html=True)
+
+            actions_col1, actions_col2, actions_col3, actions_col4 = st.columns(4)
+
+            # Like button
+            with actions_col1:
+                like_text = "❤️ Liked" if st.session_state[post_key]["liked"] else "🤍 Like"
+                if st.button(like_text, key=f"{post_key}_like", use_container_width=True):
+                    st.session_state[post_key]["liked"] = not st.session_state[post_key]["liked"]
+                    if st.session_state[post_key]["liked"]:
+                        st.session_state[post_key]["likes"] += 1
+                    else:
+                        st.session_state[post_key]["likes"] -= 1
+                    st.rerun()
+
+            # Comment button
+            with actions_col2:
+                if st.button("💬 Comment", key=f"{post_key}_comment", use_container_width=True):
+                    st.session_state[post_key]["show_comments"] = not st.session_state[post_key]["show_comments"]
+                    st.rerun()
+
+            # Share button
+            with actions_col3:
+                if st.button("🔁 Share", key=f"{post_key}_share", use_container_width=True):
+                    st.toast("📤 Shared!", icon="✅")
+
+            # Save button
+            with actions_col4:
+                if st.button("🔖 Save", key=f"{post_key}_save", use_container_width=True):
+                    st.toast("📌 Saved!", icon="✅")
+
+            # Display likes count
+            st.markdown(f"""
+            <div style="padding: 8px 0; font-size: 12px; font-weight: 600; color: #0f172a;">
+                ❤️ <b>{st.session_state[post_key]["likes"]} likes</b>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Caption
+            st.caption("**stat_central** Who's lighting it up right now? 🔥")
+
+            # Comment section (if expanded)
+            if st.session_state[post_key]["show_comments"]:
+                st.divider()
+                st.markdown("**Comments**")
+
+                # Display existing comments
+                if st.session_state[post_key]["comments"]:
+                    for comment in st.session_state[post_key]["comments"]:
+                        st.markdown(f"👤 **{comment['user']}**: {comment['text']}")
+                else:
+                    st.caption("No comments yet. Be the first!")
+
+                # Comment input
+                col_input, col_btn = st.columns([0.85, 0.15])
+                with col_input:
+                    comment_text = st.text_input("Add a comment...", key=f"{post_key}_input", label_visibility="collapsed")
+                with col_btn:
+                    if st.button("Post", key=f"{post_key}_post", use_container_width=True):
+                        if comment_text.strip():
+                            st.session_state[post_key]["comments"].append({
+                                "user": "You",
+                                "text": comment_text
+                            })
+                            st.rerun()
+                        else:
+                            st.warning("Comment cannot be empty")
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Tab 1: Game Results
