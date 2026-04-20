@@ -114,7 +114,7 @@ struct API {
         try await get("/predict/total?team_a=\(enc(teamA))&team_b=\(enc(teamB))&home=\(enc(home))&n=\(n)")
     }
 
-    static func topPerformers(league: Sport, team: String, n: Int = 15) async throws -> TopPerformersResponse {
+    static func topPerformers(league: Sport, team: String = "", n: Int = 15) async throws -> TopPerformersResponse {
         try await get("/team/top-performers?league=\(league.rawValue)&team=\(enc(team))&n=\(n)")
     }
 
