@@ -86,6 +86,7 @@
 				CCD5128929A5B0A33BBBC4E8 /* FormView.swift */,
 				AC8B1171FCD0BF1CA1412AD0 /* GameDetailView.swift */,
 				E1D389AD87F7310AAB035CC2 /* GamesView.swift */,
+				6B7C8D9E0F1A2B3C4D5E6F77 /* HomeView.swift */,
 				EE7F448344B166F289954F86 /* PlayersView.swift */,
 				176DCBF09198AB6F11D50339 /* PredictView.swift */,
 				EF4521A09656ECEDDC80011E /* StandingsView.swift */,
@@ -99,7 +100,6 @@
 			children = (
 				767F827B50B09819E9B39634 /* CloudScout */,
 				870610C5EA3463338670E1BF /* Products */,
-				6B7C8D9E0F1A2B3C4D5E6F77 /* HomeView.swift */,
 			);
 			sourceTree = "<group>";
 		};
