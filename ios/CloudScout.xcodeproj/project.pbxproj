@@ -171,6 +171,7 @@
 				803BF63B7A8C9CBC0828FD78 /* StandingsView.swift in Sources */,
 				52533FB29E7EEC5677ED065B /* Theme.swift in Sources */,
 				FF647123EDE2F01B6496D7D2 /* UpdateView.swift in Sources */,
+				5A6B7C8D9E0F1A2B3C4D5E6F /* HomeView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
