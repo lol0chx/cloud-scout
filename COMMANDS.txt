@@ -12,13 +12,37 @@ iOS APP (Swift/Xcode):
        brew install ngrok
        ngrok config add-authtoken YOUR_NGROK_TOKEN
 
-  EVERY TIME YOU WANT TO USE THE APP (3 terminal tabs):
+  ───────────────────────────────────────────────────────────────
+  OPTION A — Mac and iPhone on the SAME WiFi (no ngrok needed)
+  ───────────────────────────────────────────────────────────────
+
+  Tab 1 — Start the backend bound to your LAN:
+       cd /Users/lol/Documents/Repos/cloud-scout
+       venv/bin/uvicorn api:app --reload --host 0.0.0.0 --port 8000
+
+  Tab 2 — Find your Mac's local IP:
+       ipconfig getifaddr en0
+       → e.g. 192.168.1.42
+       → Paste http://192.168.1.42:8000 into ios/CloudScout/APIClient.swift as API_BASE
+
+  Tab 3 — Open Xcode:
+       cd /Users/lol/Documents/Repos/cloud-scout
+       open ios/CloudScout.xcodeproj
+       → Select your iPhone or a simulator at the top
+       → Press Cmd+R to build and run
+
+  Note: Simulator can also use http://127.0.0.1:8000 (no --host flag needed).
+        If the IP stops working, WiFi reassigned it — rerun ipconfig.
+
+  ───────────────────────────────────────────────────────────────
+  OPTION B — Mac and iPhone on DIFFERENT networks (use ngrok)
+  ───────────────────────────────────────────────────────────────
 
   Tab 1 — Start the backend:
        cd /Users/lol/Documents/Repos/cloud-scout
        venv/bin/uvicorn api:app --reload
 
-  Tab 2 — Start ngrok tunnel (so app works without WiFi):
+  Tab 2 — Start ngrok tunnel:
        ngrok http 8000
        → Copy the https://xxxx.ngrok-free.app URL
        → Paste it into ios/CloudScout/APIClient.swift as API_BASE

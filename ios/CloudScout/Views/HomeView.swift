@@ -117,32 +117,27 @@ struct HomeView: View {
         loading = true
         error = ""
 
-        async let nba = Task {
-            do {
-                self.nbaGames = try await API.games(league: .NBA, limit: 5).sorted { $0.date > $1.date }
-                self.nbaTopPerformers = try await API.topPerformers(league: .NBA, n: 10)
-            } catch let e {
-                error = e.localizedDescription
-            }
+        async let nbaG = API.games(league: .NBA, limit: 5)
+        async let nbaP = API.topPerformers(league: .NBA, n: 10)
+        async let mlbG = API.games(league: .MLB, limit: 5)
+        async let mlbP = API.topPerformers(league: .MLB, n: 10)
+        async let today = API.todaysGames()
+
+        do {
+            self.nbaGames = try await nbaG.sorted { $0.date > $1.date }
+            self.nbaTopPerformers = try await nbaP
+        } catch {
+            self.error = error.localizedDescription
         }
 
-        async let mlb = Task {
-            do {
-                self.mlbGames = try await API.games(league: .MLB, limit: 5).sorted { $0.date > $1.date }
-                self.mlbTopPerformers = try await API.topPerformers(league: .MLB, n: 10)
-            } catch let e {
-                error = e.localizedDescription
-            }
+        do {
+            self.mlbGames = try await mlbG.sorted { $0.date > $1.date }
+            self.mlbTopPerformers = try await mlbP
+        } catch {
+            self.error = error.localizedDescription
         }
 
-        async let today = Task {
-            do {
-                self.todayGames = try await API.todaysGames()
-            } catch {
-            }
-        }
-
-        _ = await (nba, mlb, today)
+        self.todayGames = (try? await today) ?? []
         loading = false
     }
 }

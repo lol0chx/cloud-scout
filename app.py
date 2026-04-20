@@ -500,24 +500,37 @@ with tab_home:
     # ── Filter bar (Instagram-style stories) ─────────────────────────────────
     st.markdown('<div class="ig-wrap">', unsafe_allow_html=True)
 
-    category = st.radio(
-        "Filter",
-        ["All", "🏀 NBA", "⚾ MLB", "🔥 Performances", "📊 Games"],
-        horizontal=True, label_visibility="collapsed", key="home_filter",
-    )
+    # Initialize filter state
+    if "home_filter" not in st.session_state:
+        st.session_state.home_filter = "All"
 
-    st.markdown("""
-    <div class="ig-stories">
-      <div class="ig-story"><div class="ig-story-ring"><div class="ig-story-ring-inner">🏟</div></div><div class="ig-story-label">For You</div></div>
-      <div class="ig-story"><div class="ig-story-ring"><div class="ig-story-ring-inner">🏀</div></div><div class="ig-story-label">NBA</div></div>
-      <div class="ig-story"><div class="ig-story-ring"><div class="ig-story-ring-inner">⚾</div></div><div class="ig-story-label">MLB</div></div>
-      <div class="ig-story"><div class="ig-story-ring"><div class="ig-story-ring-inner">🔥</div></div><div class="ig-story-label">Hot</div></div>
-      <div class="ig-story"><div class="ig-story-ring"><div class="ig-story-ring-inner">⭐</div></div><div class="ig-story-label">Stars</div></div>
-      <div class="ig-story"><div class="ig-story-ring"><div class="ig-story-ring-inner">📊</div></div><div class="ig-story-label">Leaders</div></div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Clickable story buttons for filtering
+    story_cols = st.columns(6)
+    stories = [
+        ("🏟", "For You", "All"),
+        ("🏀", "NBA", "🏀 NBA"),
+        ("⚾", "MLB", "⚾ MLB"),
+        ("🔥", "Hot", "🔥 Performances"),
+        ("📊", "Games", "📊 Games"),
+        ("⭐", "Stars", "All"),  # Stars shows all to highlight standout performances
+    ]
 
-    # Filter
+    for idx, (icon, label, category_val) in enumerate(stories):
+        with story_cols[idx]:
+            is_active = st.session_state.home_filter == category_val
+            border_style = "4px solid #ef4444" if is_active else "2px solid #cbd5e1"
+            if st.button(
+                f"{icon}\n{label}",
+                key=f"story_{label}",
+                use_container_width=True,
+                help=f"Show {label}"
+            ):
+                st.session_state.home_filter = category_val
+                st.rerun()
+
+    category = st.session_state.home_filter
+
+    # Filter function
     def _keep(post):
         t = post["type"]
         if category == "All": return True
