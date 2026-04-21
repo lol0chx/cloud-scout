@@ -23,7 +23,9 @@ iOS APP (Swift/Xcode):
   Tab 2 — Find your Mac's local IP:
        ipconfig getifaddr en0
        → e.g. 192.168.1.42
-       → Paste http://192.168.1.42:8000 into ios/CloudScout/APIClient.swift as API_BASE
+       → Open ios/CloudScout/APIClient.swift and replace the fallback string
+         in the `let API_BASE = ...` line with "http://192.168.1.42:8000"
+         (update the quoted URL after the `??`, NOT the env var key in brackets)
 
   Tab 3 — Open Xcode:
        cd /Users/lol/Documents/Repos/cloud-scout
@@ -45,7 +47,9 @@ iOS APP (Swift/Xcode):
   Tab 2 — Start ngrok tunnel:
        ngrok http 8000
        → Copy the https://xxxx.ngrok-free.app URL
-       → Paste it into ios/CloudScout/APIClient.swift as API_BASE
+       → Open ios/CloudScout/APIClient.swift and replace the fallback string
+         in the `let API_BASE = ...` line with the ngrok URL
+         (update the quoted URL after the `??`, NOT the env var key in brackets)
        → Rebuild in Xcode (Cmd+R)
 
   Tab 3 — Open Xcode:
@@ -56,6 +60,58 @@ iOS APP (Swift/Xcode):
 
   Note: ngrok URL changes every time you restart it (free plan).
         Update API_BASE in ios/CloudScout/APIClient.swift each time.
+
+MOBILE APP (Expo / React Native — mobile/ directory):
+================================
+  Run ALL of these from: /Users/lol/Documents/Repos/cloud-scout/mobile
+
+  FIRST TIME SETUP (only once):
+       cd /Users/lol/Documents/Repos/cloud-scout/mobile
+       npm install
+
+  ───────────────────────────────────────────────────────────────
+  OPTION A — Mac and phone on the SAME WiFi
+  ───────────────────────────────────────────────────────────────
+
+  Tab 1 — Start the backend bound to your LAN (from repo root):
+       cd /Users/lol/Documents/Repos/cloud-scout
+       venv/bin/uvicorn api:app --reload --host 0.0.0.0 --port 8000
+
+  Tab 2 — Find your Mac's local IP:
+       ipconfig getifaddr en0
+       → e.g. 192.168.1.42
+
+  Tab 3 — Set the API URL for Expo (creates mobile/.env):
+       cd /Users/lol/Documents/Repos/cloud-scout/mobile
+       echo "EXPO_PUBLIC_API_URL=http://192.168.1.42:8000" > .env
+
+  Tab 4 — Start Expo (clear cache so the new env var is picked up):
+       cd /Users/lol/Documents/Repos/cloud-scout/mobile
+       npx expo start -c
+       → Scan the QR code with the Expo Go app on your phone
+
+  ───────────────────────────────────────────────────────────────
+  OPTION B — Mac and phone on DIFFERENT networks (use ngrok)
+  ───────────────────────────────────────────────────────────────
+
+  Tab 1 — Start the backend:
+       cd /Users/lol/Documents/Repos/cloud-scout
+       venv/bin/uvicorn api:app --reload
+
+  Tab 2 — Start ngrok tunnel:
+       ngrok http 8000
+       → Copy the https://xxxx.ngrok-free.app URL
+
+  Tab 3 — Point Expo at the ngrok URL:
+       cd /Users/lol/Documents/Repos/cloud-scout/mobile
+       echo "EXPO_PUBLIC_API_URL=https://xxxx.ngrok-free.app" > .env
+       npx expo start -c
+
+  Notes:
+    - EXPO_PUBLIC_* env vars are baked in at start — you MUST restart
+      Expo (with -c to clear cache) after changing .env.
+    - ngrok URL changes every time you restart it (free plan) —
+      update mobile/.env and restart Expo each time.
 
 python3 -m streamlit run app.py
 ANTHROPIC_API_KEY=sk-ant-... venv/bin/python3 -m streamlit run app.py
