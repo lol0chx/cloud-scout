@@ -15,16 +15,17 @@ struct HomeView: View {
             ZStack {
                 Color.appBg.ignoresSafeArea()
                 VStack(spacing: 0) {
-                    HStack {
+                    HStack(alignment: .firstTextBaseline) {
                         Text("Feed")
-                            .font(.system(size: 20, weight: .bold)).foregroundColor(.white)
+                            .font(.system(size: 34, weight: .heavy, design: .rounded))
+                            .foregroundColor(.white)
                         Spacer()
                         Button { Task { await loadAll() } } label: {
                             Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 15, weight: .semibold)).foregroundColor(.appPrimary)
+                                .font(.system(size: 17, weight: .semibold)).foregroundColor(.appPrimary)
                         }
                     }
-                    .padding(.horizontal, 16).padding(.vertical, 12)
+                    .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 14)
 
                     if !error.isEmpty {
                         Text(error).foregroundColor(.appLoss).padding()
@@ -40,71 +41,41 @@ struct HomeView: View {
                         Spacer()
                     } else {
                         ScrollView(.vertical, showsIndicators: false) {
-                            VStack(spacing: 16) {
-                                if !todayGames.isEmpty {
-                                    VStack(alignment: .leading, spacing: 10) {
-                                        Text("🔴 Live Today")
-                                            .font(.system(size: 14, weight: .semibold)).foregroundColor(.appPrimary)
-                                        ForEach(todayGames) { game in
-                                            LiveGameCard(game: game)
-                                        }
-                                    }
-                                    .padding(.horizontal, 16)
+                            VStack(spacing: 10) {
+                                ForEach(todayGames) { game in
+                                    LiveGameCard(game: game)
                                 }
 
-                                if !nbaGames.isEmpty {
-                                    VStack(alignment: .leading, spacing: 10) {
-                                        Text("🏀 Latest NBA")
-                                            .font(.system(size: 14, weight: .semibold)).foregroundColor(.appPrimary)
-                                        ForEach(nbaGames.prefix(3)) { game in
-                                            GameCard(game: game)
-                                        }
-                                    }
-                                    .padding(.horizontal, 16)
+                                ForEach(nbaGames.prefix(3)) { game in
+                                    GameCard(game: game)
+                                }
 
-                                    if let perf = nbaTopPerformers, let players = perf.players, !players.isEmpty {
-                                        VStack(alignment: .leading, spacing: 10) {
-                                            Text("⭐ NBA Stars")
-                                                .font(.system(size: 14, weight: .semibold)).foregroundColor(.appPrimary)
-                                            ForEach(players.prefix(3)) { player in
-                                                NBAPerformerCard(player: player)
-                                            }
-                                        }
-                                        .padding(.horizontal, 16)
+                                if let perf = nbaTopPerformers, let players = perf.players {
+                                    ForEach(players.prefix(3)) { player in
+                                        NBAPerformerCard(player: player)
                                     }
                                 }
 
-                                if !mlbGames.isEmpty {
-                                    VStack(alignment: .leading, spacing: 10) {
-                                        Text("⚾ Latest MLB")
-                                            .font(.system(size: 14, weight: .semibold)).foregroundColor(.appMLB)
-                                        ForEach(mlbGames.prefix(3)) { game in
-                                            GameCard(game: game)
+                                ForEach(mlbGames.prefix(3)) { game in
+                                    GameCard(game: game)
+                                }
+
+                                if let perf = mlbTopPerformers {
+                                    if let batters = perf.batters {
+                                        ForEach(batters.prefix(2)) { batter in
+                                            MLBBatterCard(batter: batter)
                                         }
                                     }
-                                    .padding(.horizontal, 16)
-
-                                    if let perf = mlbTopPerformers, (!(perf.batters ?? []).isEmpty || !(perf.pitchers ?? []).isEmpty) {
-                                        VStack(alignment: .leading, spacing: 10) {
-                                            Text("🔥 MLB Standouts")
-                                                .font(.system(size: 14, weight: .semibold)).foregroundColor(.appMLB)
-                                            if let batters = perf.batters {
-                                                ForEach(batters.prefix(2)) { batter in
-                                                    MLBBatterCard(batter: batter)
-                                                }
-                                            }
-                                            if let pitchers = perf.pitchers {
-                                                ForEach(pitchers.prefix(1)) { pitcher in
-                                                    MLBPitcherCard(pitcher: pitcher)
-                                                }
-                                            }
+                                    if let pitchers = perf.pitchers {
+                                        ForEach(pitchers.prefix(1)) { pitcher in
+                                            MLBPitcherCard(pitcher: pitcher)
                                         }
-                                        .padding(.horizontal, 16)
                                     }
                                 }
 
                                 Spacer(minLength: 20)
                             }
+                            .padding(.horizontal, 16)
                         }
                     }
                 }
