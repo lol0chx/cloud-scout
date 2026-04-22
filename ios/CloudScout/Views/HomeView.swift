@@ -7,6 +7,8 @@ struct HomeView: View {
     @State private var todayGames: [TodayGame] = []
     @State private var nbaTopPerformers: TopPerformersResponse?
     @State private var mlbTopPerformers: TopPerformersResponse?
+    @State private var nbaTeams: [String] = []
+    @State private var mlbTeams: [String] = []
     @State private var loading = false
     @State private var error = ""
 
@@ -43,32 +45,64 @@ struct HomeView: View {
                         ScrollView(.vertical, showsIndicators: false) {
                             VStack(spacing: 10) {
                                 ForEach(todayGames) { game in
-                                    LiveGameCard(game: game)
+                                    Button {
+                                        state.pendingPredictMatchup = PredictMatchup(
+                                            sport: .NBA,
+                                            homeTeam: game.home_team_full,
+                                            awayTeam: game.away_team_full
+                                        )
+                                        state.sport = .NBA
+                                        state.selectedTab = 3
+                                    } label: {
+                                        LiveGameCard(game: game)
+                                    }
+                                    .buttonStyle(.plain)
                                 }
 
                                 ForEach(nbaGames.prefix(3)) { game in
-                                    GameCard(game: game)
+                                    NavigationLink { GameDetailView(game: game) } label: {
+                                        GameCard(game: game)
+                                    }
+                                    .buttonStyle(.plain)
                                 }
 
                                 if let perf = nbaTopPerformers, let players = perf.players {
                                     ForEach(players.prefix(3)) { player in
-                                        NBAPerformerCard(player: player)
+                                        NavigationLink {
+                                            PlayerDetailPush(player: player.player, sport: .NBA, role: "", teams: nbaTeams)
+                                        } label: {
+                                            NBAPerformerCard(player: player)
+                                        }
+                                        .buttonStyle(.plain)
                                     }
                                 }
 
                                 ForEach(mlbGames.prefix(3)) { game in
-                                    GameCard(game: game)
+                                    NavigationLink { GameDetailView(game: game) } label: {
+                                        GameCard(game: game)
+                                    }
+                                    .buttonStyle(.plain)
                                 }
 
                                 if let perf = mlbTopPerformers {
                                     if let batters = perf.batters {
                                         ForEach(batters.prefix(2)) { batter in
-                                            MLBBatterCard(batter: batter)
+                                            NavigationLink {
+                                                PlayerDetailPush(player: batter.player, sport: .MLB, role: "batter", teams: mlbTeams)
+                                            } label: {
+                                                MLBBatterCard(batter: batter)
+                                            }
+                                            .buttonStyle(.plain)
                                         }
                                     }
                                     if let pitchers = perf.pitchers {
                                         ForEach(pitchers.prefix(1)) { pitcher in
-                                            MLBPitcherCard(pitcher: pitcher)
+                                            NavigationLink {
+                                                PlayerDetailPush(player: pitcher.player, sport: .MLB, role: "pitcher", teams: mlbTeams)
+                                            } label: {
+                                                MLBPitcherCard(pitcher: pitcher)
+                                            }
+                                            .buttonStyle(.plain)
                                         }
                                     }
                                 }
@@ -90,8 +124,10 @@ struct HomeView: View {
 
         async let nbaG = API.games(league: .NBA, limit: 5)
         async let nbaP = API.topPerformers(league: .NBA, n: 10)
+        async let nbaT = API.teams(league: .NBA)
         async let mlbG = API.games(league: .MLB, limit: 5)
         async let mlbP = API.topPerformers(league: .MLB, n: 10)
+        async let mlbT = API.teams(league: .MLB)
         async let today = API.todaysGames()
 
         do {
@@ -108,10 +144,27 @@ struct HomeView: View {
             self.error = error.localizedDescription
         }
 
+        self.nbaTeams = (try? await nbaT) ?? []
+        self.mlbTeams = (try? await mlbT) ?? []
         self.todayGames = (try? await today) ?? []
         loading = false
     }
 }
+
+// MARK: - Navigation wrappers
+
+private struct PlayerDetailPush: View {
+    let player: String
+    let sport: Sport
+    let role: String
+    let teams: [String]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        PlayerDetailView(player: player, sport: sport, role: role, teams: teams, onBack: { dismiss() })
+    }
+}
+
 
 struct LiveGameCard: View {
     let game: TodayGame

@@ -19,6 +19,7 @@ struct PredictView: View {
     @State private var starters: StartersResponse?
     @State private var loading = false
     @State private var error = ""
+    @State private var loadTeamsTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -167,10 +168,18 @@ struct PredictView: View {
             .refreshable { await load() }
             .background(Color.appBg.ignoresSafeArea())
         }
-        .task { await loadTeams() }
-        .onChange(of: state.sport) { _, _ in Task { await loadTeams() } }
+        .task { startLoadTeams() }
+        .onChange(of: state.sport) { _, _ in startLoadTeams() }
+        .onChange(of: state.pendingPredictMatchup) { _, new in
+            if new != nil { startLoadTeams() }
+        }
         .onChange(of: teamA) { _, _ in Task { await load() } }
         .onChange(of: teamB) { _, _ in Task { await load() } }
+    }
+
+    private func startLoadTeams() {
+        loadTeamsTask?.cancel()
+        loadTeamsTask = Task { await loadTeams() }
     }
 
     @ViewBuilder
@@ -200,10 +209,17 @@ struct PredictView: View {
 
     private func loadTeams() async {
         prediction = nil; h2h = nil; homeAwayA = nil; homeAwayB = nil; formA = nil; formB = nil; advancedH2H = nil; projTotal = nil; injuriesA = []; injuriesB = []; todayMatchup = nil; starters = nil
-        do {
-            teams = try await API.teams(league: state.sport)
-            if teams.count >= 2 { teamA = teams[0]; teamB = teams[1] }
-        } catch { teams = [] }
+        let league = state.sport
+        let fetched = (try? await API.teams(league: league)) ?? []
+        guard !Task.isCancelled else { return }
+        teams = fetched
+        if let pending = state.pendingPredictMatchup, pending.sport == league {
+            teamA = pending.homeTeam
+            teamB = pending.awayTeam
+            state.pendingPredictMatchup = nil
+        } else if teams.count >= 2 {
+            teamA = teams[0]; teamB = teams[1]
+        }
         await load()
     }
 
