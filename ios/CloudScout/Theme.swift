@@ -8,7 +8,17 @@ extension Color {
     static let appWin     = Color(hex: "2ea44f")
     static let appLoss    = Color(hex: "cf222e")
     static let appSub     = Color(hex: "8a8a9a")
-    static let appMLB     = Color(hex: "d4b86a")
+    static let appMLB     = Color(hex: "f4c742")
+
+    // Feed (light look — used only in HomeView)
+    static let feedBg     = Color(hex: "f7f8fa")
+    static let feedCard   = Color(hex: "ffffff")
+    static let feedBorder = Color(hex: "e8eaee")
+    static let feedText   = Color(hex: "0f172a")
+    static let feedSub    = Color(hex: "64748b")
+    static let feedNBA    = Color(hex: "2563eb")
+    static let feedMLB    = Color(hex: "d97706")
+    static let feedLive   = Color(hex: "ef4444")
 
     init(hex: String) {
         var int: UInt64 = 0

@@ -2,7 +2,7 @@ import Foundation
 
 // Change to your local IP when testing on a physical device
 // e.g. "http://192.168.1.100:8000"
-let API_BASE = ProcessInfo.processInfo.environment["API_BASE"] ?? "http://10.0.0.26:8000"
+let API_BASE = ProcessInfo.processInfo.environment["API_BASE"] ?? "http://10.0.0.108:8000"
 
 struct ChatPayload: Encodable {
     let league: String
