@@ -201,6 +201,118 @@ struct LeagueBadge: View {
     }
 }
 
+// MARK: - Team identity (abbreviation + brand color)
+
+struct TeamStyle {
+    let abbr: String
+    let color: Color
+
+    static func lookup(_ name: String, league: String) -> TeamStyle {
+        let key = name.lowercased().trimmingCharacters(in: .whitespaces)
+        if league.uppercased() == "MLB", let s = mlb[key] { return s }
+        if league.uppercased() == "NBA", let s = nba[key] { return s }
+        let initials = name
+            .split(separator: " ")
+            .compactMap { $0.first.map(String.init) }
+            .joined()
+        let fallback = String(initials.prefix(3)).uppercased()
+        return TeamStyle(
+            abbr: fallback.isEmpty ? "TBD" : fallback,
+            color: league.uppercased() == "MLB" ? .feedMLB : .feedNBA
+        )
+    }
+
+    private static let nba: [String: TeamStyle] = [
+        "atlanta hawks":          .init(abbr: "ATL", color: Color(hex: "E03A3E")),
+        "boston celtics":         .init(abbr: "BOS", color: Color(hex: "007A33")),
+        "brooklyn nets":          .init(abbr: "BKN", color: Color(hex: "1A1A1A")),
+        "charlotte hornets":      .init(abbr: "CHA", color: Color(hex: "1D1160")),
+        "chicago bulls":          .init(abbr: "CHI", color: Color(hex: "CE1141")),
+        "cleveland cavaliers":    .init(abbr: "CLE", color: Color(hex: "860038")),
+        "dallas mavericks":       .init(abbr: "DAL", color: Color(hex: "00538C")),
+        "denver nuggets":         .init(abbr: "DEN", color: Color(hex: "0E2240")),
+        "detroit pistons":        .init(abbr: "DET", color: Color(hex: "C8102E")),
+        "golden state warriors":  .init(abbr: "GSW", color: Color(hex: "1D428A")),
+        "houston rockets":        .init(abbr: "HOU", color: Color(hex: "CE1141")),
+        "indiana pacers":         .init(abbr: "IND", color: Color(hex: "002D62")),
+        "la clippers":            .init(abbr: "LAC", color: Color(hex: "C8102E")),
+        "los angeles clippers":   .init(abbr: "LAC", color: Color(hex: "C8102E")),
+        "los angeles lakers":     .init(abbr: "LAL", color: Color(hex: "552583")),
+        "memphis grizzlies":      .init(abbr: "MEM", color: Color(hex: "5D76A9")),
+        "miami heat":             .init(abbr: "MIA", color: Color(hex: "98002E")),
+        "milwaukee bucks":        .init(abbr: "MIL", color: Color(hex: "00471B")),
+        "minnesota timberwolves": .init(abbr: "MIN", color: Color(hex: "0C2340")),
+        "new orleans pelicans":   .init(abbr: "NOP", color: Color(hex: "0C2340")),
+        "new york knicks":        .init(abbr: "NYK", color: Color(hex: "006BB6")),
+        "oklahoma city thunder":  .init(abbr: "OKC", color: Color(hex: "007AC1")),
+        "orlando magic":          .init(abbr: "ORL", color: Color(hex: "0077C0")),
+        "philadelphia 76ers":     .init(abbr: "PHI", color: Color(hex: "006BB6")),
+        "phoenix suns":           .init(abbr: "PHX", color: Color(hex: "1D1160")),
+        "portland trail blazers": .init(abbr: "POR", color: Color(hex: "E03A3E")),
+        "sacramento kings":       .init(abbr: "SAC", color: Color(hex: "5A2D81")),
+        "san antonio spurs":      .init(abbr: "SAS", color: Color(hex: "1A1A1A")),
+        "toronto raptors":        .init(abbr: "TOR", color: Color(hex: "CE1141")),
+        "utah jazz":              .init(abbr: "UTA", color: Color(hex: "002B5C")),
+        "washington wizards":     .init(abbr: "WAS", color: Color(hex: "002B5C")),
+    ]
+
+    private static let mlb: [String: TeamStyle] = [
+        "arizona diamondbacks":   .init(abbr: "ARI", color: Color(hex: "A71930")),
+        "atlanta braves":         .init(abbr: "ATL", color: Color(hex: "CE1141")),
+        "baltimore orioles":      .init(abbr: "BAL", color: Color(hex: "DF4601")),
+        "boston red sox":         .init(abbr: "BOS", color: Color(hex: "BD3039")),
+        "chicago cubs":           .init(abbr: "CHC", color: Color(hex: "0E3386")),
+        "chicago white sox":      .init(abbr: "CHW", color: Color(hex: "27251F")),
+        "cincinnati reds":        .init(abbr: "CIN", color: Color(hex: "C6011F")),
+        "cleveland guardians":    .init(abbr: "CLE", color: Color(hex: "00385D")),
+        "colorado rockies":       .init(abbr: "COL", color: Color(hex: "333366")),
+        "detroit tigers":         .init(abbr: "DET", color: Color(hex: "0C2340")),
+        "houston astros":         .init(abbr: "HOU", color: Color(hex: "002D62")),
+        "kansas city royals":     .init(abbr: "KC",  color: Color(hex: "004687")),
+        "los angeles angels":     .init(abbr: "LAA", color: Color(hex: "BA0021")),
+        "los angeles dodgers":    .init(abbr: "LAD", color: Color(hex: "005A9C")),
+        "miami marlins":          .init(abbr: "MIA", color: Color(hex: "00A3E0")),
+        "milwaukee brewers":      .init(abbr: "MIL", color: Color(hex: "12284B")),
+        "minnesota twins":        .init(abbr: "MIN", color: Color(hex: "002B5C")),
+        "new york mets":          .init(abbr: "NYM", color: Color(hex: "002D72")),
+        "new york yankees":       .init(abbr: "NYY", color: Color(hex: "003087")),
+        "oakland athletics":      .init(abbr: "OAK", color: Color(hex: "003831")),
+        "athletics":              .init(abbr: "ATH", color: Color(hex: "003831")),
+        "philadelphia phillies":  .init(abbr: "PHI", color: Color(hex: "E81828")),
+        "pittsburgh pirates":     .init(abbr: "PIT", color: Color(hex: "27251F")),
+        "san diego padres":       .init(abbr: "SD",  color: Color(hex: "2F241D")),
+        "san francisco giants":   .init(abbr: "SF",  color: Color(hex: "FD5A1E")),
+        "seattle mariners":       .init(abbr: "SEA", color: Color(hex: "0C2C56")),
+        "st. louis cardinals":    .init(abbr: "STL", color: Color(hex: "C41E3A")),
+        "st louis cardinals":     .init(abbr: "STL", color: Color(hex: "C41E3A")),
+        "tampa bay rays":         .init(abbr: "TB",  color: Color(hex: "092C5C")),
+        "texas rangers":          .init(abbr: "TEX", color: Color(hex: "003278")),
+        "toronto blue jays":      .init(abbr: "TOR", color: Color(hex: "134A8E")),
+        "washington nationals":   .init(abbr: "WAS", color: Color(hex: "AB0003")),
+    ]
+}
+
+struct TeamBadge: View {
+    let team: String
+    let league: String
+    var size: CGFloat = 30
+
+    var body: some View {
+        let style = TeamStyle.lookup(team, league: league)
+        Text(style.abbr)
+            .font(.system(size: size * 0.34, weight: .bold, design: .rounded))
+            .foregroundColor(.white)
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .frame(width: size, height: size)
+            .background(
+                Circle()
+                    .fill(style.color)
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
+            )
+    }
+}
+
 struct LiveGameCard: View {
     let game: TodayGame
 
@@ -236,14 +348,15 @@ struct LiveGameCard: View {
                     .clipShape(Capsule())
                 }
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(game.away_team_full)
-                        .font(.system(size: 17, weight: .semibold)).foregroundColor(.feedText)
-                        .lineLimit(1)
-                    HStack(spacing: 6) {
-                        Text("@")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(.feedNBA)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 10) {
+                        TeamBadge(team: game.away_team_full, league: "NBA", size: 32)
+                        Text(game.away_team_full)
+                            .font(.system(size: 17, weight: .semibold)).foregroundColor(.feedText)
+                            .lineLimit(1)
+                    }
+                    HStack(spacing: 10) {
+                        TeamBadge(team: game.home_team_full, league: "NBA", size: 32)
                         Text(game.home_team_full)
                             .font(.system(size: 17, weight: .semibold)).foregroundColor(.feedText)
                             .lineLimit(1)
@@ -320,9 +433,8 @@ struct FeedResultCard: View {
     @ViewBuilder
     private func teamRow(name: String, score: Int, won: Bool) -> some View {
         HStack(spacing: 10) {
-            Circle()
-                .fill(won ? leagueColor : Color.clear)
-                .frame(width: 6, height: 6)
+            TeamBadge(team: name, league: game.league, size: 28)
+                .opacity(won ? 1.0 : 0.55)
             Text(name)
                 .font(.system(size: 16, weight: won ? .semibold : .regular))
                 .foregroundColor(won ? .feedText : .feedSub)
