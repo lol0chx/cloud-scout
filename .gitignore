@@ -17,3 +17,6 @@ ios/*.xcodeproj/xcuserdata/
 ios/DerivedData/
 ios/*.xcworkspace/
 .claude/
+
+# Private notes
+ALGO.md

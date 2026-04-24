@@ -9,6 +9,7 @@ struct HomeView: View {
     @State private var mlbTopPerformers: TopPerformersResponse?
     @State private var nbaTeams: [String] = []
     @State private var mlbTeams: [String] = []
+    @State private var teamInsight: [String: TeamInsight] = [:]
     @State private var loading = false
     @State private var error = ""
 
@@ -43,25 +44,27 @@ struct HomeView: View {
                         Spacer()
                     } else {
                         ScrollView(.vertical, showsIndicators: false) {
-                            VStack(spacing: 12) {
+                            LazyVStack(spacing: 10) {
                                 ForEach(todayGames) { game in
-                                    Button {
-                                        state.pendingPredictMatchup = PredictMatchup(
-                                            sport: .NBA,
-                                            homeTeam: game.home_team_full,
-                                            awayTeam: game.away_team_full
-                                        )
-                                        state.sport = .NBA
-                                        state.selectedTab = 3
-                                    } label: {
-                                        LiveGameCard(game: game)
-                                    }
-                                    .buttonStyle(.plain)
+                                    LiveGameCard(
+                                        game: game,
+                                        awayInsight: teamInsight[game.away_team_full],
+                                        homeInsight: teamInsight[game.home_team_full],
+                                        onSelectMatchup: {
+                                            state.pendingPredictMatchup = PredictMatchup(
+                                                sport: .NBA,
+                                                homeTeam: game.home_team_full,
+                                                awayTeam: game.away_team_full
+                                            )
+                                            state.sport = .NBA
+                                            state.selectedTab = 3
+                                        }
+                                    )
                                 }
 
                                 ForEach(nbaGames.prefix(3)) { game in
                                     NavigationLink { GameDetailView(game: game) } label: {
-                                        FeedResultCard(game: game)
+                                        FeedResultCard(game: game, recent: nbaGames)
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -79,7 +82,7 @@ struct HomeView: View {
 
                                 ForEach(mlbGames.prefix(3)) { game in
                                     NavigationLink { GameDetailView(game: game) } label: {
-                                        FeedResultCard(game: game)
+                                        FeedResultCard(game: game, recent: mlbGames)
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -109,7 +112,6 @@ struct HomeView: View {
 
                                 Spacer(minLength: 20)
                             }
-                            .padding(.horizontal, 16)
                         }
                     }
                 }
@@ -151,7 +153,38 @@ struct HomeView: View {
         self.mlbTeams = (try? await mlbT) ?? []
         self.todayGames = (try? await today) ?? []
         loading = false
+
+        await loadTeamInsights()
     }
+
+    private func loadTeamInsights() async {
+        let teams = Set(todayGames.flatMap { [$0.home_team_full, $0.away_team_full] })
+        guard !teams.isEmpty else { return }
+
+        await withTaskGroup(of: (String, TeamInsight?).self) { group in
+            for team in teams {
+                group.addTask {
+                    async let perf = API.topPerformers(league: .NBA, team: team, n: 15)
+                    async let inj  = API.injuries(league: .NBA, team: team)
+                    let top = (try? await perf)?.players?
+                        .max { $0.avg_points < $1.avg_points }
+                    let injured = (try? await inj)?.filter {
+                        let s = $0.status.lowercased()
+                        return s == "out" || s == "doubtful" || s == "questionable"
+                    } ?? []
+                    return (team, TeamInsight(topScorer: top, injuryCount: injured.count))
+                }
+            }
+            for await (team, insight) in group {
+                if let insight { teamInsight[team] = insight }
+            }
+        }
+    }
+}
+
+struct TeamInsight {
+    let topScorer: NBATopPlayer?
+    let injuryCount: Int
 }
 
 // MARK: - Navigation wrappers
@@ -173,17 +206,69 @@ private struct PlayerDetailPush: View {
 private struct FeedCardBackground: ViewModifier {
     func body(content: Content) -> some View {
         content
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.feedCard)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(Color.feedBorder, lineWidth: 1)
-            )
     }
 }
 
 extension View {
     fileprivate func feedCard() -> some View { modifier(FeedCardBackground()) }
+}
+
+// MARK: - Source header (BR-style)
+
+struct SourceHeader: View {
+    let leagueAbbr: String   // "NBA" / "MLB"
+    let leagueColor: Color
+    let label: String        // "NBA Today", "NBA", "MLB"
+    let timestamp: String    // "2h", "Today", "Apr 12"
+    var showsMenu: Bool = true
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(leagueAbbr)
+                .font(.system(size: 11, weight: .heavy, design: .rounded))
+                .foregroundColor(.white)
+                .frame(width: 36, height: 36)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(leagueColor)
+                )
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.feedText)
+                Text(timestamp)
+                    .font(.system(size: 12))
+                    .foregroundColor(.feedSub)
+            }
+            Spacer()
+            if showsMenu {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.feedSub)
+                    .frame(width: 28, height: 28)
+            }
+        }
+    }
+}
+
+// MARK: - Footer chip (engagement-style pill)
+
+struct FeedChip: View {
+    let icon: String
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon).font(.system(size: 12, weight: .semibold))
+            Text(text).font(.system(size: 13, weight: .semibold))
+        }
+        .foregroundColor(.feedSub)
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .background(Color.feedChip)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
 }
 
 struct LeagueBadge: View {
@@ -292,6 +377,49 @@ struct TeamStyle {
     ]
 }
 
+extension TeamStyle {
+    static func nickname(for team: String, league: String) -> String {
+        let key = team.lowercased().trimmingCharacters(in: .whitespaces)
+        if league.uppercased() == "MLB", let n = mlbNicknames[key] { return n }
+        if league.uppercased() == "NBA", let n = nbaNicknames[key] { return n }
+        return team.split(separator: " ").last.map(String.init) ?? team
+    }
+
+    private static let nbaNicknames: [String: String] = [
+        "atlanta hawks": "Hawks", "boston celtics": "Celtics", "brooklyn nets": "Nets",
+        "charlotte hornets": "Hornets", "chicago bulls": "Bulls", "cleveland cavaliers": "Cavaliers",
+        "dallas mavericks": "Mavericks", "denver nuggets": "Nuggets", "detroit pistons": "Pistons",
+        "golden state warriors": "Warriors", "houston rockets": "Rockets", "indiana pacers": "Pacers",
+        "la clippers": "Clippers", "los angeles clippers": "Clippers", "los angeles lakers": "Lakers",
+        "memphis grizzlies": "Grizzlies", "miami heat": "Heat", "milwaukee bucks": "Bucks",
+        "minnesota timberwolves": "Timberwolves", "new orleans pelicans": "Pelicans",
+        "new york knicks": "Knicks", "oklahoma city thunder": "Thunder", "orlando magic": "Magic",
+        "philadelphia 76ers": "76ers", "phoenix suns": "Suns",
+        "portland trail blazers": "Trail Blazers", "sacramento kings": "Kings",
+        "san antonio spurs": "Spurs", "toronto raptors": "Raptors", "utah jazz": "Jazz",
+        "washington wizards": "Wizards",
+    ]
+
+    private static let mlbNicknames: [String: String] = [
+        "arizona diamondbacks": "Diamondbacks", "atlanta braves": "Braves",
+        "baltimore orioles": "Orioles", "boston red sox": "Red Sox",
+        "chicago cubs": "Cubs", "chicago white sox": "White Sox",
+        "cincinnati reds": "Reds", "cleveland guardians": "Guardians",
+        "colorado rockies": "Rockies", "detroit tigers": "Tigers",
+        "houston astros": "Astros", "kansas city royals": "Royals",
+        "los angeles angels": "Angels", "los angeles dodgers": "Dodgers",
+        "miami marlins": "Marlins", "milwaukee brewers": "Brewers",
+        "minnesota twins": "Twins", "new york mets": "Mets",
+        "new york yankees": "Yankees", "oakland athletics": "Athletics", "athletics": "Athletics",
+        "philadelphia phillies": "Phillies", "pittsburgh pirates": "Pirates",
+        "san diego padres": "Padres", "san francisco giants": "Giants",
+        "seattle mariners": "Mariners", "st. louis cardinals": "Cardinals",
+        "st louis cardinals": "Cardinals", "tampa bay rays": "Rays",
+        "texas rangers": "Rangers", "toronto blue jays": "Blue Jays",
+        "washington nationals": "Nationals",
+    ]
+}
+
 struct TeamBadge: View {
     let team: String
     let league: String
@@ -315,69 +443,159 @@ struct TeamBadge: View {
 
 struct LiveGameCard: View {
     let game: TodayGame
+    var awayInsight: TeamInsight? = nil
+    var homeInsight: TeamInsight? = nil
+    var onSelectMatchup: () -> Void = {}
 
-    private var statusInfo: (text: String, color: Color, isLive: Bool) {
+    private var statusLabel: String {
         switch game.game_status {
-        case 1: return ("SCHEDULED", .feedNBA, false)
-        case 2: return ("LIVE", .feedLive, true)
-        case 3: return ("FINAL", .feedSub, false)
-        default: return (game.status.uppercased(), .feedSub, false)
+        case 2: return "Live now"
+        case 3: return "Final"
+        default: return "Today"
         }
     }
 
-    var body: some View {
-        let s = statusInfo
-        HStack(spacing: 0) {
-            Rectangle().fill(Color.feedNBA).frame(width: 4)
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    LeagueBadge(text: "NBA", color: .feedNBA)
-                    Text("Today")
-                        .font(.system(size: 11, weight: .medium)).foregroundColor(.feedSub)
-                    Spacer()
-                    HStack(spacing: 5) {
-                        if s.isLive {
-                            Circle().fill(s.color).frame(width: 6, height: 6)
-                        }
-                        Text(s.text)
-                            .font(.system(size: 10, weight: .bold)).kerning(0.5)
-                            .foregroundColor(s.color)
-                    }
-                    .padding(.horizontal, 10).padding(.vertical, 4)
-                    .background(s.color.opacity(0.12))
-                    .clipShape(Capsule())
-                }
+    private var isLive: Bool { game.game_status == 2 }
 
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 10) {
-                        TeamBadge(team: game.away_team_full, league: "NBA", size: 32)
-                        Text(game.away_team_full)
-                            .font(.system(size: 17, weight: .semibold)).foregroundColor(.feedText)
-                            .lineLimit(1)
+    private var headline: String {
+        let away = TeamStyle.nickname(for: game.away_team_full, league: "NBA")
+        let home = TeamStyle.nickname(for: game.home_team_full, league: "NBA")
+        return "\(away) @ \(home)"
+    }
+
+    private var totalInjuries: Int {
+        (awayInsight?.injuryCount ?? 0) + (homeInsight?.injuryCount ?? 0)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Button(action: onSelectMatchup) {
+                VStack(alignment: .leading, spacing: 14) {
+                    SourceHeader(
+                        leagueAbbr: "NBA",
+                        leagueColor: .feedNBA,
+                        label: isLive ? "NBA · Live" : "NBA Today",
+                        timestamp: statusLabel
+                    )
+
+                    Text(headline)
+                        .font(.system(size: 26, weight: .heavy, design: .serif))
+                        .foregroundColor(.feedText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+
+                    VStack(spacing: 10) {
+                        teamRow(team: game.away_team_full, insight: awayInsight)
+                        teamRow(team: game.home_team_full, insight: homeInsight)
                     }
-                    HStack(spacing: 10) {
-                        TeamBadge(team: game.home_team_full, league: "NBA", size: 32)
-                        Text(game.home_team_full)
-                            .font(.system(size: 17, weight: .semibold)).foregroundColor(.feedText)
-                            .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            HStack(spacing: 10) {
+                if totalInjuries > 0 {
+                    NavigationLink {
+                        InjuryListView(
+                            awayTeam: game.away_team_full,
+                            homeTeam: game.home_team_full,
+                            league: .NBA
+                        )
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "cross.case.fill").font(.system(size: 11, weight: .semibold))
+                            Text("\(totalInjuries) listed injuries").font(.system(size: 13, weight: .semibold))
+                            Image(systemName: "chevron.right").font(.system(size: 10, weight: .bold))
+                        }
+                        .foregroundColor(.feedSub)
                     }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
+                Button(action: onSelectMatchup) {
+                    FeedChip(icon: "chart.bar.fill", text: "Predict")
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.top, 2)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+        .feedCard()
+    }
+
+    @ViewBuilder
+    private func teamRow(team: String, insight: TeamInsight?) -> some View {
+        HStack(spacing: 12) {
+            TeamBadge(team: team, league: "NBA", size: 32)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(team)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.feedText)
+                    .lineLimit(1)
+                if let top = insight?.topScorer {
+                    Text("\(top.player) · \(String(format: "%.1f", top.avg_points)) PPG")
+                        .font(.system(size: 13))
+                        .foregroundColor(.feedSub)
+                        .lineLimit(1)
                 }
             }
-            .padding(16)
+            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .feedCard()
     }
 }
 
 struct FeedResultCard: View {
     let game: Game
+    var recent: [Game] = []
 
     private var homeWon: Bool { game.home_score > game.away_score }
-    private var awayWon: Bool { game.away_score > game.home_score }
+    private var winner: String { homeWon ? game.home_team : game.away_team }
+    private var loser:  String { homeWon ? game.away_team : game.home_team }
+    private var winScore: Int { max(game.home_score, game.away_score) }
+    private var loseScore: Int { min(game.home_score, game.away_score) }
     private var leagueColor: Color { game.league == "MLB" ? .feedMLB : .feedNBA }
-    private var unitLabel: String { game.league == "MLB" ? "run" : "pt" }
     private var margin: Int { abs(game.home_score - game.away_score) }
+
+    private var blowoutThreshold: Int { game.league == "MLB" ? 6 : 15 }
+    private var closeThreshold: Int { game.league == "MLB" ? 2 : 5 }
+
+    private var headline: String {
+        let w = TeamStyle.nickname(for: winner, league: game.league)
+        let l = TeamStyle.nickname(for: loser, league: game.league)
+        return "\(w) beat \(l) \(winScore)–\(loseScore)"
+    }
+
+    private var subtitle: String {
+        var parts: [String] = []
+
+        if margin >= blowoutThreshold {
+            parts.append("Dominant \(margin)-\(game.league == "MLB" ? "run" : "point") win")
+        } else if margin <= closeThreshold {
+            parts.append("Tight \(margin)-\(game.league == "MLB" ? "run" : "point") finish")
+        } else {
+            parts.append("\(winner) wins by \(margin)")
+        }
+
+        if let streak = winnerStreak(), streak >= 2 {
+            parts.append("\(streak)-game win streak")
+        }
+
+        return parts.joined(separator: "  ·  ")
+    }
+
+    private func winnerStreak() -> Int? {
+        let games = recent
+            .filter { $0.league == game.league }
+            .sorted { $0.date > $1.date }
+        var streak = 0
+        for g in games where g.date <= game.date {
+            let w = g.home_score > g.away_score ? g.home_team : g.away_team
+            if w == winner { streak += 1 } else { break }
+        }
+        return streak
+    }
 
     private var formattedDate: String {
         let inFmt = DateFormatter()
@@ -387,7 +605,7 @@ struct FeedResultCard: View {
         switch days {
         case 0: return "Today"
         case 1: return "Yesterday"
-        case 2...6: return "\(days) days ago"
+        case 2...6: return "\(days)d ago"
         default:
             let out = DateFormatter()
             out.dateFormat = "MMM d"
@@ -396,52 +614,54 @@ struct FeedResultCard: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            Rectangle().fill(leagueColor).frame(width: 4)
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 8) {
-                    LeagueBadge(text: game.league, color: leagueColor)
-                    Text(formattedDate)
-                        .font(.system(size: 11, weight: .medium)).foregroundColor(.feedSub)
-                    Spacer()
-                    Text("FINAL")
-                        .font(.system(size: 10, weight: .bold)).kerning(0.5)
-                        .foregroundColor(leagueColor)
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(leagueColor.opacity(0.12))
-                        .clipShape(Capsule())
-                }
+        VStack(alignment: .leading, spacing: 12) {
+            SourceHeader(
+                leagueAbbr: game.league,
+                leagueColor: leagueColor,
+                label: "\(game.league) · Final",
+                timestamp: formattedDate
+            )
 
-                VStack(spacing: 8) {
-                    teamRow(name: game.away_team, score: game.away_score, won: awayWon)
-                    teamRow(name: game.home_team, score: game.home_score, won: homeWon)
-                }
+            Text(headline)
+                .font(.system(size: 26, weight: .heavy, design: .serif))
+                .foregroundColor(.feedText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
 
-                HStack(spacing: 4) {
-                    Text("Margin")
-                        .font(.system(size: 10, weight: .medium)).foregroundColor(.feedBorder)
-                    Text("\(margin) \(unitLabel)\(margin == 1 ? "" : "s")")
-                        .font(.system(size: 10, weight: .semibold)).foregroundColor(.feedSub)
-                }
+            VStack(spacing: 10) {
+                resultRow(team: game.away_team, score: game.away_score, won: !homeWon)
+                resultRow(team: game.home_team, score: game.home_score, won: homeWon)
             }
-            .padding(16)
+
+            Text(subtitle)
+                .font(.system(size: 14))
+                .foregroundColor(.feedSub)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+
+            HStack {
+                Spacer()
+                FeedChip(icon: "chart.line.uptrend.xyaxis", text: "Details")
+            }
+            .padding(.top, 2)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
         .feedCard()
     }
 
     @ViewBuilder
-    private func teamRow(name: String, score: Int, won: Bool) -> some View {
-        HStack(spacing: 10) {
-            TeamBadge(team: name, league: game.league, size: 28)
+    private func resultRow(team: String, score: Int, won: Bool) -> some View {
+        HStack(spacing: 12) {
+            TeamBadge(team: team, league: game.league, size: 30)
                 .opacity(won ? 1.0 : 0.55)
-            Text(name)
-                .font(.system(size: 16, weight: won ? .semibold : .regular))
+            Text(team)
+                .font(.system(size: 15, weight: won ? .semibold : .regular))
                 .foregroundColor(won ? .feedText : .feedSub)
                 .lineLimit(1)
-            Spacer()
+            Spacer(minLength: 0)
             Text("\(score)")
-                .font(.system(size: 22, weight: won ? .bold : .regular, design: .rounded))
+                .font(.system(size: 20, weight: won ? .bold : .regular, design: .rounded))
                 .foregroundColor(won ? leagueColor : .feedSub)
                 .monospacedDigit()
         }
@@ -496,22 +716,28 @@ struct PlayerCardShell<Stats: View>: View {
     let accent: Color
     @ViewBuilder let stats: () -> Stats
 
+    private var leagueAbbr: String { accent == Color.feedMLB ? "MLB" : "NBA" }
+
     var body: some View {
-        HStack(spacing: 0) {
-            Rectangle().fill(accent).frame(width: 4)
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(name)
-                        .font(.system(size: 13, weight: .semibold)).foregroundColor(.feedText)
-                    Text(subtitle)
-                        .font(.system(size: 11)).foregroundColor(.feedSub)
-                }
-                Spacer()
-                stats()
-            }
-            .padding(14)
+        VStack(alignment: .leading, spacing: 12) {
+            SourceHeader(
+                leagueAbbr: leagueAbbr,
+                leagueColor: accent,
+                label: "\(leagueAbbr) · Top performer",
+                timestamp: subtitle
+            )
+
+            Text(name)
+                .font(.system(size: 22, weight: .heavy, design: .serif))
+                .foregroundColor(.feedText)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+
+            stats()
+                .padding(.top, 2)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
         .feedCard()
     }
 }
@@ -528,6 +754,195 @@ struct StatBadge: View {
             Text(label)
                 .font(.system(size: 9)).foregroundColor(.feedSub)
         }
+    }
+}
+
+// MARK: - Injury detail view
+
+struct InjuryListView: View {
+    let awayTeam: String
+    let homeTeam: String
+    let league: Sport
+
+    @State private var awayInjuries: [Injury] = []
+    @State private var homeInjuries: [Injury] = []
+    @State private var loading = true
+    @State private var error = ""
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                matchupHeader
+
+                if loading {
+                    HStack { Spacer(); ProgressView().tint(.feedNBA); Spacer() }
+                        .padding(.top, 60)
+                } else if !error.isEmpty {
+                    Text(error)
+                        .font(.system(size: 14))
+                        .foregroundColor(.feedLive)
+                        .padding(.top, 20)
+                } else if awayInjuries.isEmpty && homeInjuries.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.system(size: 44))
+                            .foregroundColor(Color(hex: "16a34a"))
+                        Text("No injuries reported")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundColor(.feedText)
+                        Text("Both teams are clean")
+                            .font(.system(size: 13))
+                            .foregroundColor(.feedSub)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 50)
+                } else {
+                    teamSection(team: awayTeam, injuries: awayInjuries)
+                    teamSection(team: homeTeam, injuries: homeInjuries)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 16)
+        }
+        .background(Color.feedBg.ignoresSafeArea())
+        .navigationTitle("Injury Report")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(Color.feedBg, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .preferredColorScheme(.light)
+        .task { await load() }
+    }
+
+    private var matchupHeader: some View {
+        HStack(spacing: 10) {
+            TeamBadge(team: awayTeam, league: league.rawValue, size: 34)
+            Text(TeamStyle.nickname(for: awayTeam, league: league.rawValue))
+                .font(.system(size: 18, weight: .heavy, design: .serif))
+                .foregroundColor(.feedText)
+            Text("@")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.feedSub)
+            Text(TeamStyle.nickname(for: homeTeam, league: league.rawValue))
+                .font(.system(size: 18, weight: .heavy, design: .serif))
+                .foregroundColor(.feedText)
+            TeamBadge(team: homeTeam, league: league.rawValue, size: 34)
+            Spacer(minLength: 0)
+        }
+        .padding(.bottom, 4)
+    }
+
+    @ViewBuilder
+    private func teamSection(team: String, injuries: [Injury]) -> some View {
+        if !injuries.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    TeamBadge(team: team, league: league.rawValue, size: 28)
+                    Text(team)
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundColor(.feedText)
+                    Spacer()
+                    Text("\(injuries.count)")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.feedSub)
+                        .padding(.horizontal, 9).padding(.vertical, 3)
+                        .background(Color.feedChip)
+                        .clipShape(Capsule())
+                }
+
+                VStack(spacing: 8) {
+                    ForEach(injuries) { InjuryRow(injury: $0) }
+                }
+            }
+            .padding(.top, 6)
+        }
+    }
+
+    private func load() async {
+        loading = true
+        error = ""
+        async let away = API.injuries(league: league, team: awayTeam)
+        async let home = API.injuries(league: league, team: homeTeam)
+        self.awayInjuries = (try? await away) ?? []
+        self.homeInjuries = (try? await home) ?? []
+        loading = false
+    }
+}
+
+struct InjuryRow: View {
+    let injury: Injury
+
+    private var statusColor: Color {
+        switch injury.status.lowercased() {
+        case "out":                        return .feedLive
+        case "doubtful":                   return Color(hex: "ea580c")
+        case "questionable", "day-to-day": return Color(hex: "ca8a04")
+        default:                           return .feedSub
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(injury.player_name)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.feedText)
+                Spacer()
+                Text(injury.status.uppercased())
+                    .font(.system(size: 10, weight: .heavy))
+                    .kerning(0.6)
+                    .foregroundColor(statusColor)
+                    .padding(.horizontal, 9).padding(.vertical, 4)
+                    .background(statusColor.opacity(0.14))
+                    .clipShape(Capsule())
+            }
+
+            let desc = injury.injuryDescription
+            if !desc.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "bandage.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(.feedSub)
+                    Text(desc.capitalized)
+                        .font(.system(size: 13))
+                        .foregroundColor(.feedSub)
+                }
+            }
+
+            if let ret = injury.return_date, !ret.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 11))
+                        .foregroundColor(.feedSub)
+                    Text("Expected back: \(ret)")
+                        .font(.system(size: 13))
+                        .foregroundColor(.feedSub)
+                }
+            }
+
+            if let note = injury.short_comment, !note.isEmpty {
+                Text(note)
+                    .font(.system(size: 13))
+                    .foregroundColor(.feedText.opacity(0.85))
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let long = injury.long_comment, !long.isEmpty {
+                Text(long)
+                    .font(.system(size: 13))
+                    .foregroundColor(.feedText.opacity(0.85))
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Text("Updated \(injury.last_updated)")
+                    .font(.system(size: 10))
+                    .foregroundColor(.feedSub.opacity(0.8))
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.feedCard)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 

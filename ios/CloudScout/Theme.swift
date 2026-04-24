@@ -11,9 +11,10 @@ extension Color {
     static let appMLB     = Color(hex: "f4c742")
 
     // Feed (light look — used only in HomeView)
-    static let feedBg     = Color(hex: "f7f8fa")
+    static let feedBg     = Color(hex: "eef0f3")
     static let feedCard   = Color(hex: "ffffff")
     static let feedBorder = Color(hex: "e8eaee")
+    static let feedChip   = Color(hex: "f1f3f5")
     static let feedText   = Color(hex: "0f172a")
     static let feedSub    = Color(hex: "64748b")
     static let feedNBA    = Color(hex: "2563eb")
