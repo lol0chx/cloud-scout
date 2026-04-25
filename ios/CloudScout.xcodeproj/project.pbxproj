@@ -10,6 +10,7 @@
 		19BA68713FB3A6B1FBF6EAEA /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21ACD7B947DC574D8F63454E /* AppState.swift */; };
 		34F2863452D7991231277EC4 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6922B60F646DE5514098CB0 /* APIClient.swift */; };
 		3EFC54889CCCB7AC39AF4FA8 /* SportPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A61C77AD4DA67B12856DDD49 /* SportPicker.swift */; };
+		C5C1C2C3C4C5C6C7C8C9CA01 /* CSComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5C1C2C3C4C5C6C7C8C9CA02 /* CSComponents.swift */; };
 		52533FB29E7EEC5677ED065B /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6909194202562CCEE16D13A /* Theme.swift */; };
 		5779BAAE54F4FC544DC0308B /* FormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCD5128929A5B0A33BBBC4E8 /* FormView.swift */; };
 		625376AD834401AA8EEA5010 /* CloudScoutApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10ACA37E17841F46F249A11 /* CloudScoutApp.swift */; };
@@ -33,6 +34,7 @@
 		816EF7E24F16865B0B925320 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		97F2D7A452168913CAB58E85 /* CloudScout.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CloudScout.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A61C77AD4DA67B12856DDD49 /* SportPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SportPicker.swift; sourceTree = "<group>"; };
+		C5C1C2C3C4C5C6C7C8C9CA02 /* CSComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CSComponents.swift; sourceTree = "<group>"; };
 		AC8B1171FCD0BF1CA1412AD0 /* GameDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameDetailView.swift; sourceTree = "<group>"; };
 		C10ACA37E17841F46F249A11 /* CloudScoutApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudScoutApp.swift; sourceTree = "<group>"; };
 		C6922B60F646DE5514098CB0 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
@@ -73,6 +75,7 @@
 		9BDDD8C20BB2D10931578A69 /* Components */ = {
 			isa = PBXGroup;
 			children = (
+				C5C1C2C3C4C5C6C7C8C9CA02 /* CSComponents.swift */,
 				A61C77AD4DA67B12856DDD49 /* SportPicker.swift */,
 			);
 			path = Components;
@@ -168,6 +171,7 @@
 				6A5193CA56CFE52680C08433 /* PlayersView.swift in Sources */,
 				C9C7D042611DA09D2C3757AB /* PredictView.swift in Sources */,
 				3EFC54889CCCB7AC39AF4FA8 /* SportPicker.swift in Sources */,
+				C5C1C2C3C4C5C6C7C8C9CA01 /* CSComponents.swift in Sources */,
 				803BF63B7A8C9CBC0828FD78 /* StandingsView.swift in Sources */,
 				52533FB29E7EEC5677ED065B /* Theme.swift in Sources */,
 				FF647123EDE2F01B6496D7D2 /* UpdateView.swift in Sources */,
