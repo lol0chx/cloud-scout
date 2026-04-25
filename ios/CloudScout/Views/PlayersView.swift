@@ -23,118 +23,73 @@ struct PlayersView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color.appBg.ignoresSafeArea()
+                Color.csBg.ignoresSafeArea()
                 if let player = selectedPlayer {
                     PlayerDetailView(
                         player: player,
                         sport: state.sport,
                         role: role.rawValue,
                         teams: teams,
+                        teamContext: topTeam,
                         onBack: { selectedPlayer = nil }
                     )
                 } else {
                     VStack(spacing: 0) {
-                        // Header
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text("Players")
-                                .font(.system(size: 20, weight: .bold))
-                                .foregroundColor(.white)
-                                .padding(.bottom, 12)
-                            SportPicker(sport: $state.sport)
+                        header
+                            .padding(.horizontal, 18)
+                            .padding(.top, 4)
+                            .padding(.bottom, 14)
 
-                            if isMLB {
-                                HStack(spacing: 8) {
-                                    ForEach(PlayerRole.allCases, id: \.self) { r in
-                                        Button { role = r } label: {
-                                            Text(r.label)
-                                                .font(.system(size: 13, weight: .semibold))
-                                                .foregroundColor(role == r ? .appPrimary : .appSub)
-                                                .frame(maxWidth: .infinity).padding(.vertical, 8)
-                                                .background(
-                                                    RoundedRectangle(cornerRadius: 8)
-                                                        .strokeBorder(role == r ? Color.appPrimary : Color.appBorder)
-                                                        .background((role == r ? Color.appPrimary.opacity(0.1) : Color.clear).clipShape(RoundedRectangle(cornerRadius: 8)))
-                                                )
-                                        }
-                                    }
-                                }
-                                .padding(.bottom, 10)
-                            }
-
-                            TextField("Search player...", text: $search)
-                                .textFieldStyle(.plain).foregroundColor(.white)
-                                .padding(.horizontal, 12).padding(.vertical, 9)
-                                .background(Color.appCard)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.appBorder))
-                                .padding(.bottom, 8)
+                        VStack(spacing: 10) {
+                            SportToggle(sport: $state.sport)
+                            if isMLB { roleToggle }
+                            searchField
                         }
-                        .padding(.horizontal, 16).padding(.top, 16)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 10)
 
                         if loadingPlayers {
-                            ProgressView().tint(.appPrimary).padding(.bottom, 8)
+                            ProgressView().tint(.csNBA).padding(.bottom, 8)
                         }
 
-                        // Top Performers
                         if search.isEmpty {
                             ScrollView {
-                                VStack(alignment: .leading, spacing: 0) {
-                                    // Team selector for top performers
-                                    HStack {
-                                        Text("Top Performers —").font(.system(size: 13, weight: .semibold)).foregroundColor(.appSub)
-                                        Picker("", selection: $topTeam) {
-                                            ForEach(teams, id: \.self) { Text($0).tag($0) }
-                                        }
-                                        .pickerStyle(.menu).tint(.appPrimary)
-                                    }
-                                    .padding(.horizontal, 16).padding(.bottom, 8)
-
-                                    if loadingTop {
-                                        HStack { Spacer(); ProgressView().tint(.appPrimary); Spacer() }.padding(.top, 20)
-                                    } else if let tp = topPerformers {
-                                        TopPerformersSection(tp: tp, isMLB: isMLB, role: role.rawValue) { name in
-                                            selectedPlayer = name
-                                        }
-                                        .padding(.horizontal, 16)
-                                    }
-
-                                    // Player list
-                                    Text("ALL PLAYERS")
-                                        .font(.system(size: 12, weight: .semibold)).foregroundColor(.appSub).kerning(0.8)
-                                        .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 6)
-
-                                    ForEach(players.prefix(50), id: \.self) { name in
-                                        Button { selectedPlayer = name } label: {
-                                            HStack {
-                                                Text(name).foregroundColor(.white).font(.system(size: 15))
-                                                Spacer()
-                                                Text("›").foregroundColor(.appSub)
-                                            }
-                                            .padding(.horizontal, 16).padding(.vertical, 13)
-                                        }
-                                        Divider().background(Color.appBorder).padding(.horizontal, 16)
-                                    }
+                                VStack(alignment: .leading, spacing: 16) {
+                                    topPerformersSection
+                                    allPlayersSection
+                                    Spacer(minLength: 20)
                                 }
-                                .padding(.bottom, 40)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 4)
                             }
                         } else {
-                            List(players.prefix(50), id: \.self) { name in
-                                Button { selectedPlayer = name } label: {
-                                    HStack {
-                                        Text(name).foregroundColor(.white).font(.system(size: 15))
-                                        Spacer()
-                                        Text("›").foregroundColor(.appSub)
+                            ScrollView {
+                                LazyVStack(spacing: 0) {
+                                    ForEach(Array(players.prefix(50).enumerated()), id: \.offset) { idx, name in
+                                        Button { selectedPlayer = name } label: {
+                                            AllPlayerRow(name: name)
+                                        }
+                                        .buttonStyle(.plain)
+                                        if idx < min(players.count, 50) - 1 {
+                                            Divider().background(Color.csBorder)
+                                                .padding(.leading, 52)
+                                        }
                                     }
                                 }
-                                .listRowBackground(Color.appBg)
-                                .listRowSeparatorTint(Color.appBorder)
+                                .background(Color.csCard)
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .padding(.horizontal, 16)
+                                .padding(.top, 4)
+                                .padding(.bottom, 20)
                             }
-                            .listStyle(.plain)
                         }
                     }
                 }
             }
+            .toolbarBackground(Color.csBg, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
         }
+        .preferredColorScheme(.light)
         .task { await setup() }
         .onChange(of: state.sport) { _, _ in Task { await setup() } }
         .onChange(of: role) { _, _ in Task { await loadPlayers(); await loadTop() } }
@@ -145,6 +100,115 @@ struct PlayersView: View {
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 if !Task.isCancelled { await loadPlayers() }
             }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .bottom) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("ROSTER")
+                    .font(.csSection)
+                    .kerning(1.0)
+                    .foregroundColor(.csSub)
+                Text("Players")
+                    .font(.csEditorial(40))
+                    .foregroundColor(.csText)
+            }
+            Spacer()
+        }
+    }
+
+    private var roleToggle: some View {
+        HStack(spacing: 0) {
+            ForEach(PlayerRole.allCases, id: \.self) { r in
+                Button { role = r } label: {
+                    Text(r.label)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(role == r ? .white : .csSub)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(role == r ? Color.csMLB : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(Color.csChip)
+        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.csFaint)
+            TextField("Search players…", text: $search)
+                .textFieldStyle(.plain)
+                .foregroundColor(.csText)
+                .tint(.csNBA)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(Color.csCard)
+        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(Color.csBorder, lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private var topPerformersSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Top Performers") {
+                if !teams.isEmpty {
+                    Menu {
+                        ForEach(teams, id: \.self) { t in
+                            Button(t) { topTeam = t }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(topTeam.isEmpty ? "Select team" : topTeam)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.csText)
+                                .lineLimit(1)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.csSub)
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(Color.csChip)
+                        .clipShape(Capsule())
+                    }
+                }
+            }
+
+            if loadingTop {
+                HStack { Spacer(); ProgressView().tint(.csNBA); Spacer() }.padding(.top, 8)
+            } else if let tp = topPerformers {
+                VStack(spacing: 8) {
+                    TopPerformersSection(tp: tp, isMLB: isMLB, role: role.rawValue, team: topTeam, league: state.sport.rawValue) { name in
+                        selectedPlayer = name
+                    }
+                }
+            }
+        }
+    }
+
+    private var allPlayersSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "All Players")
+            LazyVStack(spacing: 0) {
+                ForEach(Array(players.prefix(50).enumerated()), id: \.offset) { idx, name in
+                    Button { selectedPlayer = name } label: {
+                        AllPlayerRow(name: name)
+                    }
+                    .buttonStyle(.plain)
+                    if idx < min(players.count, 50) - 1 {
+                        Divider().background(Color.csBorder)
+                            .padding(.leading, 52)
+                    }
+                }
+            }
+            .background(Color.csCard)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
     }
 
@@ -176,44 +240,87 @@ struct PlayersView: View {
     }
 }
 
-// MARK: - Top Performers
+// MARK: - Rows
+
+private struct AllPlayerRow: View {
+    let name: String
+
+    private var initials: String {
+        let parts = name.split(separator: " ")
+        let letters = parts.prefix(2).compactMap { $0.first.map(String.init) }.joined()
+        return letters.isEmpty ? "?" : letters.uppercased()
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle().fill(Color.csChip)
+                Text(initials)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.csSub)
+            }
+            .frame(width: 32, height: 32)
+            Text(name).font(.system(size: 15, weight: .medium)).foregroundColor(.csText)
+            Spacer()
+            Image(systemName: "chevron.right").font(.system(size: 12, weight: .bold)).foregroundColor(.csFaint)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .contentShape(Rectangle())
+    }
+}
 
 private struct TopPerformersSection: View {
     let tp: TopPerformersResponse
     let isMLB: Bool
     let role: String
+    let team: String
+    let league: String
     let onSelect: (String) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(spacing: 8) {
             if let players = tp.players {
                 ForEach(players) { p in
-                    TopPlayerRow(name: p.player, stats: [
-                        ("PTS", String(format: "%.1f", p.avg_points)),
-                        ("AST", String(format: "%.1f", p.avg_assists)),
-                        ("REB", String(format: "%.1f", p.avg_rebounds)),
-                        ("GP",  "\(p.games)"),
-                    ], onTap: { onSelect(p.player) })
+                    TopPlayerRow(
+                        name: p.player,
+                        team: team,
+                        league: league,
+                        stats: [
+                            ("PTS", String(format: "%.1f", p.avg_points)),
+                            ("AST", String(format: "%.1f", p.avg_assists)),
+                            ("REB", String(format: "%.1f", p.avg_rebounds)),
+                            ("GP",  "\(p.games)"),
+                        ],
+                        onTap: { onSelect(p.player) }
+                    )
                 }
             }
             if let batters = tp.batters, role == "batter" {
                 ForEach(batters) { b in
-                    TopPlayerRow(name: b.player, stats: [
-                        ("AVG", String(format: "%.3f", b.AVG)),
-                        ("HR",  "\(b.HR)"),
-                        ("RBI", "\(b.RBI)"),
-                        ("GP",  "\(b.games)"),
-                    ], onTap: { onSelect(b.player) })
+                    TopPlayerRow(
+                        name: b.player, team: team, league: league,
+                        stats: [
+                            ("AVG", String(format: "%.3f", b.AVG)),
+                            ("HR",  "\(b.HR)"),
+                            ("RBI", "\(b.RBI)"),
+                            ("GP",  "\(b.games)"),
+                        ],
+                        onTap: { onSelect(b.player) }
+                    )
                 }
             }
             if let pitchers = tp.pitchers, role == "pitcher" {
                 ForEach(pitchers) { p in
-                    TopPlayerRow(name: p.player, stats: [
-                        ("ERA",  String(format: "%.2f", p.ERA)),
-                        ("WHIP", String(format: "%.2f", p.WHIP)),
-                        ("SO",   "\(p.SO)"),
-                        ("IP",   String(format: "%.1f", p.IP)),
-                    ], onTap: { onSelect(p.player) })
+                    TopPlayerRow(
+                        name: p.player, team: team, league: league,
+                        stats: [
+                            ("ERA",  String(format: "%.2f", p.ERA)),
+                            ("WHIP", String(format: "%.2f", p.WHIP)),
+                            ("SO",   "\(p.SO)"),
+                            ("IP",   String(format: "%.1f", p.IP)),
+                        ],
+                        onTap: { onSelect(p.player) }
+                    )
                 }
             }
         }
@@ -222,23 +329,40 @@ private struct TopPerformersSection: View {
 
 private struct TopPlayerRow: View {
     let name: String
+    let team: String
+    let league: String
     let stats: [(String, String)]
     let onTap: () -> Void
+
     var body: some View {
         Button(action: onTap) {
-            HStack {
-                Text(name).font(.system(size: 14, weight: .semibold)).foregroundColor(.white).frame(maxWidth: .infinity, alignment: .leading).lineLimit(1)
-                ForEach(stats, id: \.0) { label, value in
-                    VStack(spacing: 2) {
-                        Text(value).font(.system(size: 13, weight: .bold)).foregroundColor(.white)
-                        Text(label).font(.system(size: 10)).foregroundColor(.appSub)
-                    }
-                    .frame(minWidth: 40)
+            HStack(spacing: 12) {
+                if !team.isEmpty {
+                    TeamBadge(team: team, league: league, size: 34)
                 }
-                Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(.appSub)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name).font(.system(size: 14, weight: .semibold)).foregroundColor(.csText).lineLimit(1)
+                    if !team.isEmpty {
+                        Text(team).font(.system(size: 11)).foregroundColor(.csSub).lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 6) {
+                    ForEach(stats, id: \.0) { label, value in
+                        VStack(spacing: 2) {
+                            Text(value).font(.csMono(13, weight: .bold)).foregroundColor(.csText)
+                            Text(label).font(.system(size: 9, weight: .bold)).kerning(0.5).foregroundColor(.csSub)
+                        }
+                        .frame(minWidth: 34)
+                    }
+                }
+                Image(systemName: "chevron.right").font(.system(size: 12, weight: .bold)).foregroundColor(.csFaint)
             }
-            .padding(12).background(Color.appCard).clipShape(RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal, 14).padding(.vertical, 12)
+            .background(Color.csCard)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
+        .buttonStyle(.plain)
     }
 }
 
@@ -249,6 +373,7 @@ struct PlayerDetailView: View {
     let sport: Sport
     let role: String
     let teams: [String]
+    var teamContext: String = ""
     let onBack: () -> Void
 
     @State private var stats: [(String, String)] = []
@@ -259,6 +384,7 @@ struct PlayerDetailView: View {
     @State private var loadingVs = false
 
     private var isMLB: Bool { sport == .MLB }
+    private var leagueAccent: Color { isMLB ? .csMLB : .csNBA }
 
     private var logColumns: [String] {
         if isMLB {
@@ -278,90 +404,23 @@ struct PlayerDetailView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                Button(action: onBack) {
-                    Label("Back to list", systemImage: "chevron.left")
-                        .font(.system(size: 14)).foregroundColor(.appPrimary)
-                }
-                .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 8)
-
-                Text(player)
-                    .font(.system(size: 20, weight: .bold)).foregroundColor(.white)
-                    .padding(.horizontal, 16).padding(.bottom, 12)
+            VStack(alignment: .leading, spacing: 14) {
+                backButton
+                hero
 
                 if loadingStats {
-                    HStack { Spacer(); ProgressView().tint(.appPrimary); Spacer() }.padding(.top, 20)
+                    HStack { Spacer(); ProgressView().tint(.csNBA); Spacer() }.padding(.top, 20)
                 } else {
-                    // Season stats grid
-                    if !stats.isEmpty {
-                        sectionHeader("Season Stats")
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                            ForEach(stats, id: \.0) { key, value in
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(key).font(.system(size: 11)).foregroundColor(.appSub)
-                                    Text(value).font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading).padding(10)
-                                .background(Color.appCard).clipShape(RoundedRectangle(cornerRadius: 8))
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                    }
-
-                    // Player vs Team
-                    sectionHeader("vs Opponent")
-                    HStack {
-                        Picker("Opponent", selection: $vsTeam) {
-                            Text("Select team").tag("")
-                            ForEach(teams, id: \.self) { Text($0).tag($0) }
-                        }
-                        .pickerStyle(.menu).tint(.appSub)
-                        .padding(8).background(Color.appCard).clipShape(RoundedRectangle(cornerRadius: 8))
-                        if loadingVs { ProgressView().tint(.appPrimary).scaleEffect(0.8) }
-                    }
-                    .padding(.horizontal, 16).padding(.bottom, 8)
-
-                    if !vsStats.isEmpty {
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                            ForEach(vsStats, id: \.0) { key, value in
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(key).font(.system(size: 11)).foregroundColor(.appSub)
-                                    Text(value).font(.system(size: 15, weight: .semibold)).foregroundColor(.appMLB)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading).padding(10)
-                                .background(Color.appCard).clipShape(RoundedRectangle(cornerRadius: 8))
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                    }
-
-                    // Game Log
-                    sectionHeader("Game Log")
-                    HStack {
-                        ForEach(logColumns, id: \.self) { col in
-                            Text(colLabels[col] ?? col).font(.system(size: 11)).foregroundColor(.appSub).frame(maxWidth: .infinity)
-                        }
-                    }
-                    .padding(.horizontal, 16).padding(.vertical, 6)
-                    Divider().background(Color.appBorder).padding(.horizontal, 16)
-
-                    ForEach(Array(log.enumerated()), id: \.offset) { _, row in
-                        HStack {
-                            ForEach(logColumns, id: \.self) { col in
-                                let val = col == "opponent"
-                                    ? (row[col] ?? "").split(separator: " ").last.map(String.init) ?? row[col] ?? "–"
-                                    : row[col] ?? "–"
-                                Text(val).font(.system(size: 13)).foregroundColor(.white).frame(maxWidth: .infinity).lineLimit(1)
-                            }
-                        }
-                        .padding(.horizontal, 16).padding(.vertical, 10)
-                        Divider().background(Color.appBorder).padding(.horizontal, 16)
-                    }
+                    if !stats.isEmpty { seasonStatsCard }
+                    vsOpponentCard
+                    gameLogCard
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
             .padding(.bottom, 40)
         }
-        .background(Color.appBg.ignoresSafeArea())
+        .background(Color.csBg.ignoresSafeArea())
         .task { await loadStats() }
         .onChange(of: vsTeam) { _, _ in
             guard !vsTeam.isEmpty else { vsStats = []; return }
@@ -369,11 +428,139 @@ struct PlayerDetailView: View {
         }
     }
 
-    @ViewBuilder
-    private func sectionHeader(_ t: String) -> some View {
-        Text(t.uppercased())
-            .font(.system(size: 12, weight: .semibold)).foregroundColor(.appSub).kerning(0.8)
-            .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 8)
+    private var backButton: some View {
+        Button(action: onBack) {
+            HStack(spacing: 4) {
+                Image(systemName: "chevron.left").font(.system(size: 13, weight: .bold))
+                Text("Players").font(.system(size: 14, weight: .semibold))
+            }
+            .foregroundColor(.csNBA)
+        }
+    }
+
+    private var hero: some View {
+        let teamColor = teamContext.isEmpty ? leagueAccent : TeamStyle.lookup(teamContext, league: sport.rawValue).color
+        return ZStack(alignment: .topLeading) {
+            LinearGradient(
+                colors: [teamColor, teamColor.opacity(0.75)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    if !teamContext.isEmpty {
+                        TeamBadge(team: teamContext, league: sport.rawValue, size: 48)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(teamContext.isEmpty ? sport.rawValue.uppercased() : "\(teamContext) · \(sport.rawValue)")
+                            .font(.csSection)
+                            .kerning(1.0)
+                            .foregroundColor(.white.opacity(0.85))
+                        Text(player)
+                            .font(.csEditorial(30))
+                            .foregroundColor(.white)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                if !stats.isEmpty {
+                    HStack(spacing: 8) {
+                        ForEach(stats.prefix(4), id: \.0) { label, value in
+                            VStack(spacing: 2) {
+                                Text(value).font(.csMono(15, weight: .bold)).foregroundColor(.white)
+                                Text(label.uppercased()).font(.system(size: 9, weight: .bold)).kerning(0.5).foregroundColor(.white.opacity(0.8))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.18))
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                    }
+                }
+            }
+            .padding(18)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private var seasonStatsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Season Stats")
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                ForEach(stats, id: \.0) { key, value in
+                    StatBox(value: value, label: key, accent: .csText)
+                }
+            }
+        }
+    }
+
+    private var vsOpponentCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "vs Opponent") {
+                Menu {
+                    Button("Select team") { vsTeam = "" }
+                    ForEach(teams, id: \.self) { t in
+                        Button(t) { vsTeam = t }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(vsTeam.isEmpty ? "Select team" : vsTeam)
+                            .font(.system(size: 12, weight: .semibold)).foregroundColor(.csText).lineLimit(1)
+                        Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold)).foregroundColor(.csSub)
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Color.csChip)
+                    .clipShape(Capsule())
+                }
+            }
+
+            if loadingVs {
+                ProgressView().tint(.csNBA).scaleEffect(0.8)
+            } else if !vsStats.isEmpty {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    ForEach(vsStats, id: \.0) { key, value in
+                        StatBox(value: value, label: key, accent: leagueAccent)
+                    }
+                }
+            }
+        }
+    }
+
+    private var gameLogCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Game Log")
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    ForEach(logColumns, id: \.self) { col in
+                        Text(colLabels[col] ?? col)
+                            .font(.csSection).kerning(0.8)
+                            .foregroundColor(.csSub)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                Divider().background(Color.csBorder)
+                ForEach(Array(log.enumerated()), id: \.offset) { i, row in
+                    HStack(spacing: 0) {
+                        ForEach(logColumns, id: \.self) { col in
+                            let val = col == "opponent"
+                                ? (row[col] ?? "").split(separator: " ").last.map(String.init) ?? row[col] ?? "–"
+                                : row[col] ?? "–"
+                            Text(val)
+                                .font(.csMono(12, weight: col == "date" || col == "opponent" ? .regular : .semibold))
+                                .foregroundColor(.csText)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .lineLimit(1)
+                        }
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    if i < log.count - 1 { Divider().background(Color.csBorder) }
+                }
+            }
+            .background(Color.csCard)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
     }
 
     private func loadStats() async {
