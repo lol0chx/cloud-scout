@@ -11,7 +11,6 @@ struct PredictView: View {
     @State private var homeAwayB: HomeAwayStats?
     @State private var formA: TeamForm?
     @State private var formB: TeamForm?
-    @State private var advancedH2H: H2HAdvancedResponse?
     @State private var projTotal: ProjectedTotalResponse?
     @State private var injuriesA: [Injury] = []
     @State private var injuriesB: [Injury] = []
@@ -20,154 +19,83 @@ struct PredictView: View {
     @State private var loading = false
     @State private var error = ""
     @State private var loadTeamsTask: Task<Void, Never>?
+    @State private var showBreakdown = false
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("Predictions")
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(.bottom, 12)
-                    SportPicker(sport: $state.sport)
+            ZStack {
+                Color.csBg.ignoresSafeArea()
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        header
+                            .padding(.horizontal, 18)
+                            .padding(.top, 4)
 
-                    // Team pickers
-                    HStack(alignment: .bottom, spacing: 8) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Team A").font(.system(size: 12)).foregroundColor(.appSub)
-                            Picker("Team A", selection: $teamA) {
-                                ForEach(teams, id: \.self) { Text($0).tag($0) }
+                        SportToggle(sport: $state.sport)
+                            .padding(.horizontal, 16)
+
+                        matchupPicker
+                            .padding(.horizontal, 14)
+
+                        if teamA == teamB && !teamA.isEmpty {
+                            Text("Select two different teams.")
+                                .font(.system(size: 13))
+                                .foregroundColor(.csLoss)
+                                .padding(.horizontal, 16)
+                        }
+
+                        if !error.isEmpty {
+                            Text(error)
+                                .foregroundColor(.csLive)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 20)
+                        } else if loading && prediction == nil {
+                            HStack { Spacer(); ProgressView().tint(.csNBA); Spacer() }
+                                .padding(.top, 40)
+                        } else if let p = prediction {
+                            winProbabilitySection(p)
+                            factorsSection(p)
+
+                            if state.sport == .NBA, let matchup = todayMatchup {
+                                todayMatchupSection(matchup)
                             }
-                            .pickerStyle(.menu).tint(.appSub)
-                            .frame(maxWidth: .infinity)
-                            .padding(8).background(Color.appCard)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                        }
-                        Text("vs").foregroundColor(.appSub).padding(.bottom, 12)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Team B").font(.system(size: 12)).foregroundColor(.appSub)
-                            Picker("Team B", selection: $teamB) {
-                                ForEach(teams, id: \.self) { Text($0).tag($0) }
+
+                            if let fa = formA, let fb = formB {
+                                recentFormSection(p: p, fa: fa, fb: fb)
                             }
-                            .pickerStyle(.menu).tint(.appSub)
-                            .frame(maxWidth: .infinity)
-                            .padding(8).background(Color.appCard)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                        }
-                    }
-                    .padding(.bottom, 12)
 
-                    if teamA == teamB && !teamA.isEmpty {
-                        Text("Select two different teams.")
-                            .font(.system(size: 13)).foregroundColor(.appMLB).padding(.bottom, 8)
-                    }
+                            seasonRecordSection(p)
 
-                    if !error.isEmpty {
-                        Text(error).foregroundColor(.appLoss).padding(.top, 20)
-                    } else if loading {
-                        HStack { Spacer(); ProgressView().tint(.appPrimary); Spacer() }.padding(.top, 40)
-                    } else if let p = prediction {
-                        // Win probability
-                        SectionHeader("Win Probability")
-                        HStack(spacing: 10) {
-                            ProbCard(team: p.team_a, pct: p.prob_a, winning: p.prob_a >= p.prob_b)
-                            ProbCard(team: p.team_b, pct: p.prob_b, winning: p.prob_b > p.prob_a)
-                        }.padding(.bottom, 4)
-
-                        // Spread
-                        SectionHeader(state.sport == .MLB ? "Run Line" : "Spread")
-                        spreadCard(p)
-
-                        // Context
-                        SectionHeader("Season Record")
-                        HStack(spacing: 10) {
-                            ContextCard(team: p.team_a, record: p.team_a_record, streak: p.team_a_streak)
-                            ContextCard(team: p.team_b, record: p.team_b_record, streak: p.team_b_streak)
-                        }
-
-                        // Recent form
-                        if let fa = formA, let fb = formB {
-                            SectionHeader("Recent Form (Last 5)")
-                            HStack(spacing: 10) {
-                                FormStrip(team: p.team_a, form: fa)
-                                FormStrip(team: p.team_b, form: fb)
+                            if state.sport == .NBA, !injuriesA.isEmpty || !injuriesB.isEmpty {
+                                injuryReportSection(p)
                             }
-                        }
 
-                        // Injury Report
-                        if !injuriesA.isEmpty || !injuriesB.isEmpty {
-                            SectionHeader("Injury Report")
-                            HStack(alignment: .top, spacing: 10) {
-                                InjuryListCard(team: p.team_a, injuries: injuriesA)
-                                InjuryListCard(team: p.team_b, injuries: injuriesB)
-                            }
-                        }
-
-                        // Today's Matchup & Starters
-                        if let matchup = todayMatchup {
-                            SectionHeader("Today's Matchup")
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack {
-                                    Text("\(matchup.away_team_full) @ \(matchup.home_team_full)")
-                                        .font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
-                                    Spacer()
-                                    Text(matchup.status)
-                                        .font(.system(size: 11)).foregroundColor(.appPrimary)
-                                }
-                                if let s = starters, (!s.home.isEmpty || !s.away.isEmpty) {
-                                    Text("Confirmed Starters").font(.system(size: 11, weight: .semibold)).foregroundColor(.appSub).padding(.top, 4)
-                                    HStack(alignment: .top, spacing: 12) {
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            Text(s.away_team ?? "Away").font(.system(size: 11, weight: .semibold)).foregroundColor(.white)
-                                            ForEach(s.away) { p in
-                                                Text("\(p.name) (\(p.position))").font(.system(size: 11)).foregroundColor(.appSub)
-                                            }
-                                        }.frame(maxWidth: .infinity, alignment: .leading)
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            Text(s.home_team ?? "Home").font(.system(size: 11, weight: .semibold)).foregroundColor(.white)
-                                            ForEach(s.home) { p in
-                                                Text("\(p.name) (\(p.position))").font(.system(size: 11)).foregroundColor(.appSub)
-                                            }
-                                        }.frame(maxWidth: .infinity, alignment: .leading)
-                                    }
+                            if let h = h2h {
+                                h2hSummarySection(p: p, h2h: h)
+                                if !h.games.isEmpty {
+                                    h2hGameLogSection(p: p, h2h: h)
                                 }
                             }
-                            .padding(12).background(Color.appCard).clipShape(RoundedRectangle(cornerRadius: 10))
-                        }
 
-                        // H2H Summary
-                        if let h = h2h {
-                            SectionHeader("Head-to-Head Summary")
-                            H2HSummary(teamA: p.team_a, teamB: p.team_b, h2h: h, isMLB: state.sport == .MLB)
+                            if let ha = homeAwayA, let hb = homeAwayB {
+                                homeAwaySection(p: p, ha: ha, hb: hb)
+                            }
 
-                            // H2H Game Log
-                            SectionHeader("H2H Game Log")
-                            H2HGameLog(games: h.games, teamA: p.team_a, teamB: p.team_b)
-                        }
-
-                        // Home / Away
-                        if let ha = homeAwayA, let hb = homeAwayB {
-                            SectionHeader("Home & Away Performance")
-                            HStack(spacing: 10) {
-                                HomeAwayCard(team: p.team_a, stats: ha, isMLB: state.sport == .MLB)
-                                HomeAwayCard(team: p.team_b, stats: hb, isMLB: state.sport == .MLB)
+                            if state.sport == .NBA, let proj = projTotal {
+                                projectedTotalSection(proj)
                             }
                         }
 
-                        // Projected Total (NBA only)
-                        if state.sport == .NBA, let proj = projTotal {
-                            SectionHeader("Projected Total (O/U)")
-                            ProjectedTotalCard(proj: proj, teamA: p.team_a, teamB: p.team_b)
-                        }
-
+                        Spacer(minLength: 30)
                     }
+                    .padding(.bottom, 40)
                 }
-                .padding(16)
-                .padding(.bottom, 40)
+                .refreshable { await load() }
             }
-            .refreshable { await load() }
-            .background(Color.appBg.ignoresSafeArea())
+            .toolbarBackground(Color.csBg, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
         }
+        .preferredColorScheme(.light)
         .task { startLoadTeams() }
         .onChange(of: state.sport) { _, _ in startLoadTeams() }
         .onChange(of: state.pendingPredictMatchup) { _, new in
@@ -177,38 +105,511 @@ struct PredictView: View {
         .onChange(of: teamB) { _, _ in Task { await load() } }
     }
 
+    // MARK: - Header
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("MATCHUP")
+                .font(.csSection)
+                .kerning(1.0)
+                .foregroundColor(.csSub)
+            Text("Predict")
+                .font(.csEditorial(40))
+                .foregroundColor(.csText)
+        }
+    }
+
+    // MARK: - Matchup picker
+
+    private var matchupPicker: some View {
+        HStack(spacing: 12) {
+            MatchupSlot(team: teamA, league: state.sport.rawValue, teams: teams, selection: $teamA)
+            Text("VS")
+                .font(.system(size: 14, weight: .heavy))
+                .foregroundColor(.csFaint)
+            MatchupSlot(team: teamB, league: state.sport.rawValue, teams: teams, selection: $teamB)
+        }
+        .padding(14)
+        .background(Color.csCard)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    // MARK: - Win probability
+
+    @ViewBuilder
+    private func winProbabilitySection(_ p: Prediction) -> some View {
+        SectionHeader(title: "Win Probability")
+            .padding(.horizontal, 16)
+
+        let probA = p.prob_a
+        let probB = p.prob_b
+        let aLeads = probA >= probB
+        let colorA = TeamStyle.lookup(p.team_a, league: state.sport.rawValue).color
+        let colorB = TeamStyle.lookup(p.team_b, league: state.sport.rawValue).color
+
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .bottom, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        TeamBadge(team: p.team_a, league: state.sport.rawValue, size: 26)
+                        Text(TeamStyle.nickname(for: p.team_a, league: state.sport.rawValue))
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.csText)
+                            .lineLimit(1)
+                    }
+                    Text(String(format: "%.0f%%", probA))
+                        .font(.csMono(aLeads ? 44 : 34, weight: aLeads ? .heavy : .bold))
+                        .foregroundColor(aLeads ? .csWin : .csSub)
+                        .monospacedDigit()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                VStack(alignment: .trailing, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text(TeamStyle.nickname(for: p.team_b, league: state.sport.rawValue))
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(aLeads ? .csSub : .csText)
+                            .lineLimit(1)
+                        TeamBadge(team: p.team_b, league: state.sport.rawValue, size: 26)
+                    }
+                    Text(String(format: "%.0f%%", probB))
+                        .font(.csMono(aLeads ? 34 : 44, weight: aLeads ? .bold : .heavy))
+                        .foregroundColor(aLeads ? .csSub : .csWin)
+                        .monospacedDigit()
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+
+            probabilityBar(probA: probA, probB: probB, colorA: colorA, colorB: colorB)
+
+            spreadChip(p)
+        }
+        .csCard(radius: 18, padding: EdgeInsets(top: 18, leading: 18, bottom: 18, trailing: 18))
+        .padding(.horizontal, 14)
+    }
+
+    private func probabilityBar(probA: Double, probB: Double, colorA: Color, colorB: Color) -> some View {
+        GeometryReader { geo in
+            let total = max(probA + probB, 1)
+            let aW = geo.size.width * probA / total
+            HStack(spacing: 0) {
+                Rectangle().fill(colorA).frame(width: aW)
+                Rectangle().fill(colorB)
+            }
+            .clipShape(Capsule())
+        }
+        .frame(height: 10)
+        .background(Capsule().fill(Color.csChip))
+    }
+
+    @ViewBuilder
+    private func spreadChip(_ p: Prediction) -> some View {
+        let isMLB = state.sport == .MLB
+        let unit = isMLB ? "runs" : "pts"
+        let favorite = p.margin > 0 ? p.team_a : (p.margin < 0 ? p.team_b : "")
+        let favColor = favorite.isEmpty ? Color.csText : TeamStyle.lookup(favorite, league: state.sport.rawValue).color
+        HStack(spacing: 10) {
+            Text("SPREAD")
+                .font(.csSection)
+                .kerning(0.6)
+                .foregroundColor(.csSub)
+            Group {
+                if p.margin == 0 {
+                    Text("Pick 'em").foregroundColor(.csText)
+                } else {
+                    HStack(spacing: 4) {
+                        Text(TeamStyle.nickname(for: favorite, league: state.sport.rawValue))
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(favColor)
+                        Text("favored by")
+                            .font(.system(size: 14))
+                            .foregroundColor(.csText)
+                        Text(String(format: "%.1f", abs(p.margin)))
+                            .font(.csMono(14, weight: .heavy))
+                            .foregroundColor(.csText)
+                        Text(unit)
+                            .font(.system(size: 14))
+                            .foregroundColor(.csText)
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(Color.csChip)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    // MARK: - Factors
+
+    @ViewBuilder
+    private func factorsSection(_ p: Prediction) -> some View {
+        SectionHeader(title: "Why · Factors")
+            .padding(.horizontal, 16)
+
+        let rows = buildFactorRows(p)
+        let colorA = TeamStyle.lookup(p.team_a, league: state.sport.rawValue).color
+        let colorB = TeamStyle.lookup(p.team_b, league: state.sport.rawValue).color
+
+        VStack(spacing: 8) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                FactorRow(label: row.label, valueA: row.valueA, valueB: row.valueB, lean: row.lean, colorA: colorA, colorB: colorB)
+            }
+        }
+        .padding(.horizontal, 14)
+    }
+
+    private struct FactorRowData {
+        let label: String
+        let valueA: String
+        let valueB: String
+        let lean: Double  // -1..+1, positive = team A
+    }
+
+    private func buildFactorRows(_ p: Prediction) -> [FactorRowData] {
+        var rows: [FactorRowData] = []
+        let isMLB = state.sport == .MLB
+        let unit = isMLB ? "R" : "pts"
+
+        // Overall record
+        let recA = "\(p.team_a_record.wins)-\(p.team_a_record.losses)"
+        let recB = "\(p.team_b_record.wins)-\(p.team_b_record.losses)"
+        let pctDiff = (p.team_a_record.win_pct - p.team_b_record.win_pct) / 100
+        rows.append(.init(label: "Overall record", valueA: recA, valueB: recB, lean: clamp(pctDiff * 2)))
+
+        // Net rating / run diff
+        if let fa = formA, let fb = formB {
+            let nA = String(format: "%+.1f", fa.net_rating)
+            let nB = String(format: "%+.1f", fb.net_rating)
+            let diff = fa.net_rating - fb.net_rating
+            let span = isMLB ? 4.0 : 10.0
+            rows.append(.init(label: isMLB ? "Run differential" : "Net rating", valueA: nA, valueB: nB, lean: clamp(diff / span)))
+        }
+
+        // Home/away split
+        if let ha = homeAwayA, let hb = homeAwayB {
+            let haStr = "\(ha.home.games > 0 ? String(format: "%.0f%% H", ha.home.win_pct) : "—")"
+            let hbStr = "\(hb.away.games > 0 ? String(format: "%.0f%% A", hb.away.win_pct) : "—")"
+            let diff = (ha.home.win_pct - hb.away.win_pct) / 100
+            rows.append(.init(label: "Home / away split", valueA: haStr, valueB: hbStr, lean: clamp(diff * 1.5)))
+        }
+
+        // H2H
+        if let h = h2h, h.team_a_wins + h.team_b_wins > 0 {
+            let total = h.team_a_wins + h.team_b_wins
+            let lean = Double(h.team_a_wins - h.team_b_wins) / Double(total)
+            rows.append(.init(label: "Head-to-head", valueA: "\(h.team_a_wins)-\(h.team_b_wins)", valueB: "\(h.team_b_wins)-\(h.team_a_wins)", lean: lean))
+        }
+
+        // Streaks
+        let streakA = p.team_a_streak.type == "W" ? p.team_a_streak.count : -p.team_a_streak.count
+        let streakB = p.team_b_streak.type == "W" ? p.team_b_streak.count : -p.team_b_streak.count
+        let streakLean = clamp(Double(streakA - streakB) / 6.0)
+        let streakAStr = "\(p.team_a_streak.type)\(p.team_a_streak.count)"
+        let streakBStr = "\(p.team_b_streak.type)\(p.team_b_streak.count)"
+        rows.append(.init(label: "Current streak", valueA: streakAStr, valueB: streakBStr, lean: streakLean))
+
+        // Injuries (NBA only)
+        if state.sport == .NBA, !injuriesA.isEmpty || !injuriesB.isEmpty {
+            let outsA = injuriesA.filter { $0.status.lowercased() == "out" || $0.status.lowercased() == "doubtful" }.count
+            let outsB = injuriesB.filter { $0.status.lowercased() == "out" || $0.status.lowercased() == "doubtful" }.count
+            let lean = clamp(Double(outsB - outsA) / 4.0)
+            rows.append(.init(label: "Key injuries", valueA: "\(outsA)", valueB: "\(outsB)", lean: lean))
+        }
+
+        _ = unit
+        return rows
+    }
+
+    private func clamp(_ x: Double) -> Double { min(1.0, max(-1.0, x)) }
+
+    // MARK: - Projected total
+
+    @ViewBuilder
+    private func projectedTotalSection(_ proj: ProjectedTotalResponse) -> some View {
+        let purple = Color(hex: "6c5ce7")
+        SectionHeader(title: "Projected Total (O/U)")
+            .padding(.horizontal, 16)
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(String(format: "%.1f", proj.projected_total))
+                    .font(.csMono(42, weight: .heavy))
+                    .foregroundColor(purple)
+                    .monospacedDigit()
+                Text("projected total")
+                    .font(.system(size: 12))
+                    .foregroundColor(.csSub)
+            }
+
+            HStack {
+                Text(baseAdjustmentText(proj))
+                    .font(.system(size: 12))
+                    .foregroundColor(.csSub)
+                Spacer()
+                Button {
+                    withAnimation { showBreakdown.toggle() }
+                } label: {
+                    HStack(spacing: 3) {
+                        Text("Step-by-step")
+                        Image(systemName: showBreakdown ? "chevron.up" : "chevron.right")
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.csNBA)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if showBreakdown {
+                Divider().background(Color.csBorder)
+                breakdownRows(proj)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.csCard)
+                Rectangle().fill(purple).frame(width: 4).clipShape(
+                    UnevenRoundedRectangle(cornerRadii: .init(topLeading: 18, bottomLeading: 18), style: .continuous)
+                )
+            }
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(.horizontal, 14)
+    }
+
+    private func baseAdjustmentText(_ proj: ProjectedTotalResponse) -> String {
+        let base = Double(proj.steps["step_1_base"]?["base_total"]?.stringValue ?? "0") ?? 0
+        let adj = proj.projected_total - base
+        return String(format: "Base %.1f · Adjustments %+.1f", base, adj)
+    }
+
+    @ViewBuilder
+    private func breakdownRows(_ proj: ProjectedTotalResponse) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            breakdownRow("Shooting", key: "step_2_shooting")
+            breakdownRow("Turnovers", key: "step_3_turnovers")
+            breakdownRow("Free throws", key: "step_4_free_throws")
+            breakdownRow("Rest", key: "step_5_rest")
+            breakdownRow("Home court", key: "step_6_home_court")
+            breakdownRow("Form", key: "step_7_form")
+            breakdownRow("Injuries", key: "step_8_injuries")
+        }
+    }
+
+    @ViewBuilder
+    private func breakdownRow(_ label: String, key: String) -> some View {
+        let adjStr = proj_adj(key)
+        HStack {
+            Text(label).font(.system(size: 13)).foregroundColor(.csText)
+            Spacer()
+            Text(adjStr)
+                .font(.csMono(13, weight: .bold))
+                .foregroundColor(adjStr.hasPrefix("+") ? .csWin : adjStr.hasPrefix("-") ? .csLoss : .csSub)
+                .monospacedDigit()
+        }
+    }
+
+    private func proj_adj(_ key: String) -> String {
+        guard let proj = projTotal, let v = proj.steps[key]?["adjustment"] else { return "—" }
+        let n = Double(v.stringValue) ?? 0
+        return String(format: "%+.1f", n)
+    }
+
+    // MARK: - Today's matchup + starters
+
+    @ViewBuilder
+    private func todayMatchupSection(_ matchup: TodayGame) -> some View {
+        SectionHeader(title: "Today's Matchup")
+            .padding(.horizontal, 16)
+
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                TeamBadge(team: matchup.away_team_full, league: "NBA", size: 36)
+                Text(TeamStyle.nickname(for: matchup.away_team_full, league: "NBA"))
+                    .font(.csEditorial(20))
+                    .foregroundColor(.csText)
+                Text("@")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.csFaint)
+                Text(TeamStyle.nickname(for: matchup.home_team_full, league: "NBA"))
+                    .font(.csEditorial(20))
+                    .foregroundColor(.csText)
+                TeamBadge(team: matchup.home_team_full, league: "NBA", size: 36)
+                Spacer(minLength: 0)
+                if matchup.game_status == 2 {
+                    StatusPill(kind: .live, text: "Live")
+                } else if matchup.game_status == 3 {
+                    StatusPill(kind: .final, text: "Final")
+                } else {
+                    StatusPill(kind: .scheduled, text: matchup.status)
+                }
+            }
+
+            if let s = starters, (!s.home.isEmpty || !s.away.isEmpty) {
+                Divider().background(Color.csBorder)
+                Text("CONFIRMED STARTERS")
+                    .font(.csSection)
+                    .kerning(0.8)
+                    .foregroundColor(.csSub)
+                HStack(alignment: .top, spacing: 14) {
+                    starterColumn(team: s.away_team ?? matchup.away_team_full, players: s.away)
+                    Divider().background(Color.csBorder)
+                    starterColumn(team: s.home_team ?? matchup.home_team_full, players: s.home)
+                }
+            }
+        }
+        .csCard(radius: 16)
+        .padding(.horizontal, 14)
+    }
+
+    @ViewBuilder
+    private func starterColumn(team: String, players: [StarterPlayer]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(TeamStyle.nickname(for: team, league: "NBA"))
+                .font(.system(size: 12, weight: .heavy))
+                .kerning(0.5)
+                .foregroundColor(.csText)
+            ForEach(players) { p in
+                HStack(spacing: 6) {
+                    Text(p.position)
+                        .font(.csMono(10, weight: .heavy))
+                        .foregroundColor(.csSub)
+                        .frame(width: 22, alignment: .leading)
+                    Text(p.name)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.csText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - Recent form
+
+    @ViewBuilder
+    private func recentFormSection(p: Prediction, fa: TeamForm, fb: TeamForm) -> some View {
+        SectionHeader(title: "Recent Form · Last 5")
+            .padding(.horizontal, 16)
+
+        HStack(spacing: 10) {
+            FormStripCard(team: p.team_a, league: state.sport.rawValue, form: fa)
+            FormStripCard(team: p.team_b, league: state.sport.rawValue, form: fb)
+        }
+        .padding(.horizontal, 14)
+    }
+
+    // MARK: - Season record
+
+    @ViewBuilder
+    private func seasonRecordSection(_ p: Prediction) -> some View {
+        SectionHeader(title: "Season Record")
+            .padding(.horizontal, 16)
+
+        HStack(spacing: 10) {
+            RecordCard(team: p.team_a, league: state.sport.rawValue, record: p.team_a_record, streak: p.team_a_streak)
+            RecordCard(team: p.team_b, league: state.sport.rawValue, record: p.team_b_record, streak: p.team_b_streak)
+        }
+        .padding(.horizontal, 14)
+    }
+
+    // MARK: - Injury report
+
+    @ViewBuilder
+    private func injuryReportSection(_ p: Prediction) -> some View {
+        SectionHeader(title: "Injury Report")
+            .padding(.horizontal, 16)
+
+        VStack(spacing: 10) {
+            InjurySummaryCard(team: p.team_a, league: state.sport.rawValue, injuries: injuriesA)
+            InjurySummaryCard(team: p.team_b, league: state.sport.rawValue, injuries: injuriesB)
+        }
+        .padding(.horizontal, 14)
+    }
+
+    // MARK: - Head-to-head
+
+    @ViewBuilder
+    private func h2hSummarySection(p: Prediction, h2h: H2HResponse) -> some View {
+        SectionHeader(title: "Head-to-Head")
+            .padding(.horizontal, 16)
+
+        let isMLB = state.sport == .MLB
+        let unit = isMLB ? "RUNS" : "PTS"
+        let aColor = TeamStyle.lookup(p.team_a, league: state.sport.rawValue).color
+        let bColor = TeamStyle.lookup(p.team_b, league: state.sport.rawValue).color
+
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                StatBox(value: "\(h2h.team_a_wins)", label: "\(TeamStyle.lookup(p.team_a, league: state.sport.rawValue).abbr) WINS", accent: aColor)
+                StatBox(value: String(format: "%.1f", h2h.avg_total), label: "AVG TOTAL \(unit)")
+                StatBox(value: "\(h2h.team_b_wins)", label: "\(TeamStyle.lookup(p.team_b, league: state.sport.rawValue).abbr) WINS", accent: bColor)
+            }
+
+            let aScores = h2h.games.compactMap { g -> Double? in
+                guard let v = g["\(p.team_a)_score"]?.value else { return nil }
+                return Double("\(v)")
+            }
+            let bScores = h2h.games.compactMap { g -> Double? in
+                guard let v = g["\(p.team_b)_score"]?.value else { return nil }
+                return Double("\(v)")
+            }
+            if !aScores.isEmpty, aScores.count == bScores.count {
+                let avgA = aScores.reduce(0, +) / Double(aScores.count)
+                let avgB = bScores.reduce(0, +) / Double(bScores.count)
+                let avgMargin = (avgA - avgB)
+                HStack(spacing: 8) {
+                    StatBox(value: String(format: "%.1f", avgA), label: "\(TeamStyle.lookup(p.team_a, league: state.sport.rawValue).abbr) AVG")
+                    StatBox(value: String(format: "%+.1f", avgMargin), label: "MARGIN", accent: avgMargin >= 0 ? .csWin : .csLoss)
+                    StatBox(value: String(format: "%.1f", avgB), label: "\(TeamStyle.lookup(p.team_b, league: state.sport.rawValue).abbr) AVG")
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+    }
+
+    @ViewBuilder
+    private func h2hGameLogSection(p: Prediction, h2h: H2HResponse) -> some View {
+        SectionHeader(title: "H2H Game Log")
+            .padding(.horizontal, 16)
+
+        VStack(spacing: 6) {
+            ForEach(Array(h2h.games.enumerated()), id: \.offset) { _, g in
+                H2HGameRow(raw: g, teamA: p.team_a, teamB: p.team_b, league: state.sport.rawValue)
+            }
+        }
+        .padding(.horizontal, 14)
+    }
+
+    // MARK: - Home & away
+
+    @ViewBuilder
+    private func homeAwaySection(p: Prediction, ha: HomeAwayStats, hb: HomeAwayStats) -> some View {
+        SectionHeader(title: "Home & Away Performance")
+            .padding(.horizontal, 16)
+
+        HStack(spacing: 10) {
+            HomeAwaySplitCard(team: p.team_a, league: state.sport.rawValue, stats: ha, isMLB: state.sport == .MLB)
+            HomeAwaySplitCard(team: p.team_b, league: state.sport.rawValue, stats: hb, isMLB: state.sport == .MLB)
+        }
+        .padding(.horizontal, 14)
+    }
+
+    // MARK: - Data
+
     private func startLoadTeams() {
         loadTeamsTask?.cancel()
         loadTeamsTask = Task { await loadTeams() }
     }
 
-    @ViewBuilder
-    private func spreadCard(_ p: Prediction) -> some View {
-        let isMLB = state.sport == .MLB
-        Group {
-            if p.margin > 0 {
-                (Text(p.team_a).foregroundColor(.appPrimary) +
-                 Text(" favored by ") +
-                 Text(String(format: "%.1f %@", abs(p.margin), isMLB ? "runs" : "pts")).bold())
-            } else if p.margin < 0 {
-                (Text(p.team_b).foregroundColor(.appPrimary) +
-                 Text(" favored by ") +
-                 Text(String(format: "%.1f %@", abs(p.margin), isMLB ? "runs" : "pts")).bold())
-            } else {
-                Text("Pick 'em")
-            }
-        }
-        .font(.system(size: 15))
-        .foregroundColor(.appSub)
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.appCard)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .padding(.bottom, 4)
-    }
-
     private func loadTeams() async {
-        prediction = nil; h2h = nil; homeAwayA = nil; homeAwayB = nil; formA = nil; formB = nil; advancedH2H = nil; projTotal = nil; injuriesA = []; injuriesB = []; todayMatchup = nil; starters = nil
+        prediction = nil; h2h = nil; homeAwayA = nil; homeAwayB = nil
+        formA = nil; formB = nil; projTotal = nil
+        injuriesA = []; injuriesB = []
+        todayMatchup = nil; starters = nil
         let league = state.sport
         let fetched = (try? await API.teams(league: league)) ?? []
         guard !Task.isCancelled else { return }
@@ -234,341 +635,463 @@ struct PredictView: View {
             async let fA = API.teamForm(league: state.sport, team: teamA, n: 5)
             async let fB = API.teamForm(league: state.sport, team: teamB, n: 5)
             (prediction, h2h, homeAwayA, homeAwayB, formA, formB) = try await (pred, h2hRes, haA, haB, fA, fB)
-            // Fetch advanced data + projected total + injuries (NBA only)
             if state.sport == .NBA {
-                advancedH2H = try? await API.advancedH2H(teamA: teamA, teamB: teamB)
                 projTotal = try? await API.projectedTotal(teamA: teamA, teamB: teamB)
                 injuriesA = (try? await API.injuries(league: state.sport, team: teamA)) ?? []
                 injuriesB = (try? await API.injuries(league: state.sport, team: teamB)) ?? []
 
-                // Check if these teams play today
                 if let allToday = try? await API.todaysGames() {
                     todayMatchup = allToday.first { g in
-                        (teamA.contains(g.home_team) || teamA.contains(g.away_team) ||
-                         g.home_team_full == teamA || g.away_team_full == teamA) &&
-                        (teamB.contains(g.home_team) || teamB.contains(g.away_team) ||
-                         g.home_team_full == teamB || g.away_team_full == teamB)
+                        let aMatches = teamA.contains(g.home_team) || teamA.contains(g.away_team) ||
+                            g.home_team_full == teamA || g.away_team_full == teamA
+                        let bMatches = teamB.contains(g.home_team) || teamB.contains(g.away_team) ||
+                            g.home_team_full == teamB || g.away_team_full == teamB
+                        return aMatches && bMatches
                     }
                     if let matchup = todayMatchup, matchup.game_status >= 2 {
                         starters = try? await API.starters(gameId: matchup.game_id)
+                    } else {
+                        starters = nil
                     }
+                } else {
+                    todayMatchup = nil
+                    starters = nil
                 }
+            } else {
+                todayMatchup = nil
+                starters = nil
             }
         } catch let e { error = e.localizedDescription }
         loading = false
     }
 }
 
-// MARK: - Subviews
+// MARK: - Matchup slot
 
-private struct SectionHeader: View {
-    let title: String
-    init(_ t: String) { title = t }
-    var body: some View {
-        Text(title.uppercased())
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundColor(.appSub).kerning(0.8)
-            .padding(.top, 16).padding(.bottom, 8)
-    }
-}
+private struct MatchupSlot: View {
+    let team: String
+    let league: String
+    let teams: [String]
+    @Binding var selection: String
 
-private struct ProbCard: View {
-    let team: String; let pct: Double; let winning: Bool
     var body: some View {
-        VStack(spacing: 4) {
-            Text(String(format: "%.0f%%", pct)).font(.system(size: 32, weight: .heavy)).foregroundColor(.white)
-            Text(team).font(.system(size: 12)).foregroundColor(.white.opacity(0.9)).multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity).padding(16)
-        .background(winning ? Color.appWin : Color.appLoss)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-}
-
-private struct ContextCard: View {
-    let team: String; let record: TeamRecord; let streak: TeamStreak
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(team).font(.system(size: 13, weight: .semibold)).foregroundColor(.white).lineLimit(2)
-            Text("\(record.wins)W – \(record.losses)L").font(.system(size: 12)).foregroundColor(.appSub)
-            Text(String(format: "%.0f%% win", record.win_pct)).font(.system(size: 12)).foregroundColor(.appSub)
-            Text("\(streak.type)\(streak.count) streak")
-                .font(.system(size: 12))
-                .foregroundColor(streak.type == "W" ? .appWin : .appLoss)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading).padding(14)
-        .background(Color.appCard).clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-}
-
-private struct FormStrip: View {
-    let team: String; let form: TeamForm
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(team).font(.system(size: 12, weight: .semibold)).foregroundColor(.white).lineLimit(1)
-            HStack(spacing: 4) {
-                ForEach(form.form_log.prefix(5)) { g in
-                    VStack(spacing: 2) {
-                        Text(g.result).font(.system(size: 12, weight: .bold)).foregroundColor(.white)
-                        Text("\(g.scored)-\(g.conceded)").font(.system(size: 9)).foregroundColor(.white.opacity(0.85))
-                    }
-                    .frame(maxWidth: .infinity).padding(.vertical, 6)
-                    .background(g.result == "W" ? Color.appWin : Color.appLoss)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+        Menu {
+            ForEach(teams, id: \.self) { t in
+                Button(t) { selection = t }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                TeamBadge(team: team.isEmpty ? "TBD" : team, league: league, size: 32)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(league.uppercased())
+                        .font(.system(size: 10, weight: .heavy))
+                        .kerning(0.5)
+                        .foregroundColor(.csFaint)
+                    Text(team.isEmpty ? "Select" : TeamStyle.nickname(for: team, league: league))
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.csText)
+                        .lineLimit(1)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.csFaint)
             }
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(Color.csChip)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity).padding(12)
-        .background(Color.appCard).clipShape(RoundedRectangle(cornerRadius: 10))
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
     }
 }
 
-private struct H2HSummary: View {
-    let teamA: String; let teamB: String; let h2h: H2HResponse; let isMLB: Bool
-    var body: some View {
-        VStack(spacing: 0) {
-            // Win counts
-            HStack(spacing: 10) {
-                StatBox(label: "\(teamA) Wins", value: "\(h2h.team_a_wins)", color: .appPrimary)
-                StatBox(label: "Avg Total \(isMLB ? "Runs" : "Pts")", value: "\(h2h.avg_total)")
-                StatBox(label: "\(teamB) Wins", value: "\(h2h.team_b_wins)", color: .appPrimary)
-            }
-            .padding(.bottom, 8)
+// MARK: - Factor row
 
-            // Avg scores from games
-            let aScores = h2h.games.compactMap { g -> Double? in
-                let key = "\(teamA)_score"
-                if let v = g[key]?.value { return Double("\(v)") }
-                return nil
-            }
-            let bScores = h2h.games.compactMap { g -> Double? in
-                let key = "\(teamB)_score"
-                if let v = g[key]?.value { return Double("\(v)") }
-                return nil
-            }
-            if !aScores.isEmpty && !bScores.isEmpty {
-                let avgA = aScores.reduce(0, +) / Double(aScores.count)
-                let avgB = bScores.reduce(0, +) / Double(bScores.count)
-                let margins = zip(aScores, bScores).map { $0 - $1 }
-                let avgMarginA = margins.reduce(0, +) / Double(margins.count)
+private struct FactorRow: View {
+    let label: String
+    let valueA: String
+    let valueB: String
+    let lean: Double
+    let colorA: Color
+    let colorB: Color
 
-                HStack(spacing: 10) {
-                    StatBox(label: "Avg \(isMLB ? "Runs" : "Pts") (\(teamA))", value: String(format: "%.1f", avgA))
-                    StatBox(label: "Avg Margin", value: String(format: "%+.1f", avgMarginA))
-                    StatBox(label: "Avg \(isMLB ? "Runs" : "Pts") (\(teamB))", value: String(format: "%.1f", avgB))
-                }
-            }
-        }
-    }
-}
-
-private struct StatBox: View {
-    let label: String; let value: String; var color: Color = .white
-    var body: some View {
-        VStack(spacing: 4) {
-            Text(value).font(.system(size: 18, weight: .bold)).foregroundColor(color)
-            Text(label).font(.system(size: 10)).foregroundColor(.appSub).multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity).padding(12)
-        .background(Color.appCard).clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-}
-
-private struct H2HGameLog: View {
-    let games: [[String: AnyCodable]]; let teamA: String; let teamB: String
-
-    private func toGame(_ g: [String: AnyCodable]) -> Game? {
-        guard let id = g["id"]?.value as? Int,
-              let date = g["date"]?.stringValue,
-              let league = g["league"]?.stringValue,
-              let season = g["season"]?.stringValue else { return nil }
-        let aScore = Int(g["\(teamA)_score"]?.stringValue.split(separator: ".").first ?? "0") ?? 0
-        let bScore = Int(g["\(teamB)_score"]?.stringValue.split(separator: ".").first ?? "0") ?? 0
-        let homeIsA = g["home_team"]?.stringValue == teamA
-        return Game(id: id, date: date,
-                    home_team: homeIsA ? teamA : teamB,
-                    away_team: homeIsA ? teamB : teamA,
-                    home_score: homeIsA ? aScore : bScore,
-                    away_score: homeIsA ? bScore : aScore,
-                    league: league, season: season)
-    }
-
-    var body: some View {
-        VStack(spacing: 6) {
-            ForEach(Array(games.enumerated()), id: \.offset) { _, g in
-                let aScore = g["\(teamA)_score"]?.stringValue.split(separator: ".").first.map(String.init) ?? "?"
-                let bScore = g["\(teamB)_score"]?.stringValue.split(separator: ".").first.map(String.init) ?? "?"
-                let date = g["date"]?.stringValue ?? ""
-                let winner = g["winner"]?.stringValue ?? ""
-                let row = HStack(spacing: 4) {
-                    Text(date).font(.system(size: 11)).foregroundColor(.appSub).frame(width: 76, alignment: .leading)
-                    Text(teamA).font(.system(size: 12)).foregroundColor(winner == teamA ? .white : .appSub).lineLimit(1).frame(maxWidth: .infinity, alignment: .trailing)
-                    Text("\(aScore)–\(bScore)").font(.system(size: 14, weight: .bold)).foregroundColor(.white).fixedSize().padding(.horizontal, 6)
-                    Text(teamB).font(.system(size: 12)).foregroundColor(winner == teamB ? .white : .appSub).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(10).background(Color.appCard).clipShape(RoundedRectangle(cornerRadius: 8))
-
-                if let game = toGame(g) {
-                    NavigationLink(destination: GameDetailView(game: game)) { row }
-                } else {
-                    row
-                }
-            }
-        }
-    }
-}
-
-private struct HomeAwayCard: View {
-    let team: String; let stats: HomeAwayStats; let isMLB: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(team).font(.system(size: 12, weight: .semibold)).foregroundColor(.white).lineLimit(1)
-            ForEach(["Home", "Away"], id: \.self) { loc in
-                let s = loc == "Home" ? stats.home : stats.away
-                HStack {
-                    Text(loc).font(.system(size: 12, weight: .semibold)).foregroundColor(.appSub).frame(width: 36, alignment: .leading)
-                    Text(String(format: "%.1f", s.avg_scored)).font(.system(size: 12)).foregroundColor(.white).frame(maxWidth: .infinity)
-                    Text(String(format: "%.1f", s.avg_conceded)).font(.system(size: 12)).foregroundColor(.appSub).frame(maxWidth: .infinity)
-                    Text(String(format: "%.0f%%", s.win_pct)).font(.system(size: 12)).foregroundColor(s.win_pct >= 50 ? .appWin : .appLoss).frame(maxWidth: .infinity)
-                }
-            }
-            HStack {
-                Text("").frame(width: 36)
-                Text(isMLB ? "Avg R" : "Avg Pts").font(.system(size: 10)).foregroundColor(.appSub).frame(maxWidth: .infinity)
-                Text("Conceded").font(.system(size: 10)).foregroundColor(.appSub).frame(maxWidth: .infinity)
-                Text("Win%").font(.system(size: 10)).foregroundColor(.appSub).frame(maxWidth: .infinity)
+            Text(label)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.csSub)
+            HStack(spacing: 10) {
+                Text(valueA)
+                    .font(.csMono(13, weight: .bold))
+                    .foregroundColor(.csText)
+                    .frame(width: 76, alignment: .leading)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                FactorBar(lean: lean, colorA: colorA, colorB: colorB)
+                    .frame(height: 6)
+                Text(valueB)
+                    .font(.csMono(13, weight: .semibold))
+                    .foregroundColor(.csSub)
+                    .frame(width: 76, alignment: .trailing)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
         }
-        .padding(12).background(Color.appCard).clipShape(RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(Color.csCard)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
-private struct InjuryListCard: View {
+// MARK: - Form strip card
+
+private struct FormStripCard: View {
     let team: String
-    let injuries: [Injury]
+    let league: String
+    let form: TeamForm
+
+    private func gameFrom(_ g: FormGame) -> Game {
+        let isHome = g.location.lowercased() == "home"
+        let season = String(Calendar.current.component(.year, from: Date()))
+        return Game(
+            id: abs((g.date + g.opponent).hashValue),
+            date: g.date,
+            home_team: isHome ? team : g.opponent,
+            away_team: isHome ? g.opponent : team,
+            home_score: isHome ? g.scored : g.conceded,
+            away_score: isHome ? g.conceded : g.scored,
+            league: league,
+            season: season
+        )
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(team).font(.system(size: 12, weight: .semibold)).foregroundColor(.white).lineLimit(1)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                TeamBadge(team: team, league: league, size: 24)
+                Text(TeamStyle.nickname(for: team, league: league))
+                    .font(.system(size: 12, weight: .heavy))
+                    .kerning(0.4)
+                    .foregroundColor(.csText)
+                    .lineLimit(1)
+            }
+            HStack(spacing: 5) {
+                ForEach(form.form_log.prefix(5)) { g in
+                    NavigationLink {
+                        GameDetailView(game: gameFrom(g), selectedTeam: team)
+                    } label: {
+                        VStack(spacing: 2) {
+                            Text(g.result)
+                                .font(.system(size: 13, weight: .heavy))
+                                .foregroundColor(.white)
+                            Text(String(format: "%+d", g.margin))
+                                .font(.csMono(11, weight: .bold))
+                                .foregroundColor(.white.opacity(0.9))
+                                .monospacedDigit()
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(g.result == "W" ? Color.csWin : Color.csLoss)
+                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color.csCard)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+// MARK: - Record card
+
+private struct RecordCard: View {
+    let team: String
+    let league: String
+    let record: TeamRecord
+    let streak: TeamStreak
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                TeamBadge(team: team, league: league, size: 24)
+                Text(TeamStyle.nickname(for: team, league: league))
+                    .font(.system(size: 12, weight: .heavy))
+                    .kerning(0.4)
+                    .foregroundColor(.csText)
+                    .lineLimit(1)
+            }
+            Text("\(record.wins)–\(record.losses)")
+                .font(.csMono(28, weight: .heavy))
+                .foregroundColor(.csText)
+                .monospacedDigit()
+            HStack(spacing: 8) {
+                Text(String(format: "%.0f%% win", record.win_pct))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.csSub)
+                Text("·").foregroundColor(.csFaint)
+                Text("\(streak.type)\(streak.count)")
+                    .font(.csMono(11, weight: .heavy))
+                    .foregroundColor(streak.type == "W" ? .csWin : .csLoss)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(Color.csCard)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+// MARK: - Injury summary card
+
+private struct InjurySummaryCard: View {
+    let team: String
+    let league: String
+    let injuries: [Injury]
+
+    private func kind(_ status: String) -> StatusPill.Kind? {
+        switch status.lowercased() {
+        case "out": return .out
+        case "doubtful": return .doubtful
+        case "questionable", "day-to-day": return .questionable
+        default: return nil
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                TeamBadge(team: team, league: league, size: 24)
+                Text(TeamStyle.nickname(for: team, league: league))
+                    .font(.system(size: 12, weight: .heavy))
+                    .kerning(0.4)
+                    .foregroundColor(.csText)
+                Spacer(minLength: 0)
+                Text("\(injuries.count)")
+                    .font(.system(size: 11, weight: .heavy))
+                    .foregroundColor(.csSub)
+                    .padding(.horizontal, 9).padding(.vertical, 3)
+                    .background(Color.csChip)
+                    .clipShape(Capsule())
+            }
+
             if injuries.isEmpty {
-                Text("All healthy ✅").font(.system(size: 11)).foregroundColor(.appSub)
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(.csWin)
+                    Text("All healthy")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.csSub)
+                }
             } else {
-                ForEach(injuries) { inj in
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 4) {
-                            Text(inj.statusIcon).font(.system(size: 10))
-                            Text(inj.player_name).font(.system(size: 12, weight: .semibold)).foregroundColor(.white).lineLimit(1)
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(injuries.prefix(4)) { inj in
+                        HStack(spacing: 8) {
+                            Text(inj.player_name)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.csText)
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            if let k = kind(inj.status) {
+                                StatusPill(kind: k, text: inj.status)
+                            }
                         }
-                        Text("\(inj.status)\(inj.injuryDescription.isEmpty ? "" : " — \(inj.injuryDescription)")")
-                            .font(.system(size: 10)).foregroundColor(.appSub).lineLimit(2)
-                        if let ret = inj.return_date, !ret.isEmpty {
-                            Text("Est. return: \(ret)")
-                                .font(.system(size: 10)).foregroundColor(.appPrimary)
-                        }
+                    }
+                    if injuries.count > 4 {
+                        Text("+\(injuries.count - 4) more")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.csSub)
                     }
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12).background(Color.appCard).clipShape(RoundedRectangle(cornerRadius: 10))
+        .padding(14)
+        .background(Color.csCard)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
-private struct ProjectedTotalCard: View {
-    let proj: ProjectedTotalResponse
+// MARK: - H2H game row
+
+private struct H2HGameRow: View {
+    let raw: [String: AnyCodable]
     let teamA: String
     let teamB: String
-    @State private var expanded = false
+    let league: String
 
-    private func val(_ step: String, _ key: String) -> String {
-        guard let s = proj.steps[step], let v = s[key] else { return "—" }
-        return v.stringValue
+    private var aScore: Int {
+        Int(raw["\(teamA)_score"]?.stringValue.split(separator: ".").first.map(String.init) ?? "") ?? 0
+    }
+    private var bScore: Int {
+        Int(raw["\(teamB)_score"]?.stringValue.split(separator: ".").first.map(String.init) ?? "") ?? 0
+    }
+    private var date: String { raw["date"]?.stringValue ?? "" }
+    private var winner: String { raw["winner"]?.stringValue ?? "" }
+
+    private func toGame() -> Game? {
+        guard let id = raw["id"]?.value as? Int,
+              let season = raw["season"]?.stringValue else { return nil }
+        let homeIsA = raw["home_team"]?.stringValue == teamA
+        return Game(
+            id: id, date: date,
+            home_team: homeIsA ? teamA : teamB,
+            away_team: homeIsA ? teamB : teamA,
+            home_score: homeIsA ? aScore : bScore,
+            away_score: homeIsA ? bScore : aScore,
+            league: league, season: season
+        )
     }
 
-    private func adj(_ step: String) -> String {
-        guard let s = proj.steps[step], let v = s["adjustment"] else { return "—" }
-        let n = Double(v.stringValue) ?? 0
-        return String(format: "%+.1f", n)
-    }
-
-    var body: some View {
-        VStack(spacing: 12) {
-            // Big projected total
-            VStack(spacing: 4) {
-                Text(String(format: "%.1f", proj.projected_total))
-                    .font(.system(size: 42, weight: .bold))
-                    .foregroundColor(Color(hex: "#6c5ce7"))
-                Text("Projected Game Total")
-                    .font(.system(size: 12)).foregroundColor(.appSub)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(Color(hex: "#6c5ce7"), lineWidth: 2)
-                    .background(Color.appCard.clipShape(RoundedRectangle(cornerRadius: 10)))
-            )
-
-            // Expandable breakdown
-            Button { withAnimation { expanded.toggle() } } label: {
-                HStack {
-                    Text("Step-by-step breakdown")
-                        .font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
-                    Spacer()
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 12)).foregroundColor(.appSub)
-                }
-                .padding(12).background(Color.appCard).clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-
-            if expanded {
-                VStack(alignment: .leading, spacing: 10) {
-                    stepRow("1. Base Total", detail: "Pace: \(val("step_1_base","pace_a"))/\(val("step_1_base","pace_b")) → Poss: \(val("step_1_base","expected_possessions"))", value: val("step_1_base", "base_total"))
-                    stepRow("2. Shooting", detail: "eFG%: \(val("step_2_shooting","efg_a"))% / \(val("step_2_shooting","efg_b"))%", value: adj("step_2_shooting"))
-                    stepRow("3. Turnovers", detail: "TOV%: \(val("step_3_turnovers","tov_rate_a"))% / \(val("step_3_turnovers","tov_rate_b"))%", value: adj("step_3_turnovers"))
-                    stepRow("4. Free Throws", detail: "FTr: \(val("step_4_free_throws","ft_rate_a"))% / \(val("step_4_free_throws","ft_rate_b"))%", value: adj("step_4_free_throws"))
-                    stepRow("5. Rest", detail: "\(val("step_5_rest","rest_days_a"))d / \(val("step_5_rest","rest_days_b"))d", value: adj("step_5_rest"))
-                    stepRow("6. Home Court", detail: val("step_6_home_court", "home_team"), value: adj("step_6_home_court"))
-                    stepRow("7. Form", detail: "Δ \(val("step_7_form","form_delta_a")) / \(val("step_7_form","form_delta_b"))", value: adj("step_7_form"))
-                    stepRow("8. Injuries", detail: injuryStepDetail(), value: adj("step_8_injuries"))
-
-                    Divider().background(Color.appBorder)
-
-                    HStack {
-                        Text("Final").font(.system(size: 13, weight: .bold)).foregroundColor(.white)
-                        Spacer()
-                        Text(String(format: "%.1f", proj.projected_total))
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundColor(Color(hex: "#6c5ce7"))
-                    }
-                }
-                .padding(12).background(Color.appCard).clipShape(RoundedRectangle(cornerRadius: 10))
-            }
-        }
-    }
-
-    private func injuryStepDetail() -> String {
-        guard let s = proj.steps["step_8_injuries"] else { return "No data" }
-        if s["skipped"]?.stringValue == "true" || s["skipped"]?.stringValue == "1" {
-            return "No injury data — refresh from sidebar"
-        }
-        let countA = (s["injured_out_a"]?.value as? [[String: Any]])?.count ?? 0
-        let countB = (s["injured_out_b"]?.value as? [[String: Any]])?.count ?? 0
-        if countA == 0 && countB == 0 { return "No key players Out/Doubtful" }
-        return "\(countA) out (\(teamA)) / \(countB) out (\(teamB))"
+    private var formattedDate: String {
+        let inFmt = DateFormatter()
+        inFmt.dateFormat = "yyyy-MM-dd"
+        guard let d = inFmt.date(from: date) else { return date }
+        let out = DateFormatter()
+        out.dateFormat = "MMM d"
+        return out.string(from: d)
     }
 
     @ViewBuilder
-    private func stepRow(_ title: String, detail: String, value: String) -> some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 12, weight: .semibold)).foregroundColor(.white)
-                Text(detail).font(.system(size: 11)).foregroundColor(.appSub)
+    private var rowContent: some View {
+        HStack(spacing: 8) {
+            Text(formattedDate)
+                .font(.csMono(11, weight: .semibold))
+                .foregroundColor(.csSub)
+                .frame(width: 56, alignment: .leading)
+            Text(TeamStyle.lookup(teamA, league: league).abbr)
+                .font(.system(size: 12, weight: winner == teamA ? .heavy : .semibold))
+                .foregroundColor(winner == teamA ? .csText : .csSub)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            Text("\(aScore)–\(bScore)")
+                .font(.csMono(14, weight: .heavy))
+                .foregroundColor(.csText)
+                .monospacedDigit()
+                .padding(.horizontal, 6)
+            Text(TeamStyle.lookup(teamB, league: league).abbr)
+                .font(.system(size: 12, weight: winner == teamB ? .heavy : .semibold))
+                .foregroundColor(winner == teamB ? .csText : .csSub)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(Color.csCard)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    var body: some View {
+        if let game = toGame() {
+            NavigationLink { GameDetailView(game: game) } label: { rowContent }
+                .buttonStyle(.plain)
+        } else {
+            rowContent
+        }
+    }
+}
+
+// MARK: - Home/away split card
+
+private struct HomeAwaySplitCard: View {
+    let team: String
+    let league: String
+    let stats: HomeAwayStats
+    let isMLB: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                TeamBadge(team: team, league: league, size: 24)
+                Text(TeamStyle.nickname(for: team, league: league))
+                    .font(.system(size: 12, weight: .heavy))
+                    .kerning(0.4)
+                    .foregroundColor(.csText)
+                    .lineLimit(1)
             }
-            Spacer()
-            Text(value)
-                .font(.system(size: 13, weight: .bold))
-                .foregroundColor(value.hasPrefix("+") ? .appWin : value.hasPrefix("-") ? .appLoss : .white)
+
+            row(label: "HOME", split: stats.home)
+            row(label: "AWAY", split: stats.away)
+
+            HStack {
+                Text("").frame(width: 38)
+                legend(isMLB ? "Avg R" : "Avg Pts")
+                legend("Allowed")
+                legend("Win%")
+            }
+            .padding(.top, 2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color.csCard)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func row(label: String, split: LocationStats) -> some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.system(size: 10, weight: .heavy))
+                .kerning(0.6)
+                .foregroundColor(.csSub)
+                .frame(width: 38, alignment: .leading)
+            Text(String(format: "%.1f", split.avg_scored))
+                .font(.csMono(12, weight: .bold))
+                .foregroundColor(.csText)
+                .frame(maxWidth: .infinity)
+            Text(String(format: "%.1f", split.avg_conceded))
+                .font(.csMono(12, weight: .semibold))
+                .foregroundColor(.csSub)
+                .frame(maxWidth: .infinity)
+            Text(String(format: "%.0f%%", split.win_pct))
+                .font(.csMono(12, weight: .bold))
+                .foregroundColor(split.win_pct >= 50 ? .csWin : .csLoss)
+                .frame(maxWidth: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private func legend(_ text: String) -> some View {
+        Text(text.uppercased())
+            .font(.system(size: 9, weight: .heavy))
+            .kerning(0.5)
+            .foregroundColor(.csFaint)
+            .frame(maxWidth: .infinity)
+    }
+}
+
+private struct FactorBar: View {
+    let lean: Double
+    let colorA: Color
+    let colorB: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let halfW = w / 2
+            let fillW = halfW * min(1, abs(lean))
+            ZStack(alignment: .center) {
+                Capsule().fill(Color.csChip)
+                HStack(spacing: 0) {
+                    Spacer()
+                    if lean < 0 {
+                        Capsule().fill(colorB).frame(width: fillW)
+                    } else {
+                        Color.clear.frame(width: 0)
+                    }
+                    if lean > 0 {
+                        Capsule().fill(colorA).frame(width: fillW)
+                    } else {
+                        Color.clear.frame(width: 0)
+                    }
+                    Spacer()
+                }
+                .frame(width: w)
+                Rectangle().fill(Color.csBorder).frame(width: 1, height: 10)
+            }
         }
     }
 }
