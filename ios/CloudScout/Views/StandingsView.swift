@@ -9,57 +9,105 @@ struct StandingsView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color.appBg.ignoresSafeArea()
+                Color.csBg.ignoresSafeArea()
                 VStack(spacing: 0) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("Standings")
-                            .font(.system(size: 20, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.bottom, 12)
-                        SportPicker(sport: $state.sport)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 16)
+                    header
+                        .padding(.horizontal, 18)
+                        .padding(.top, 4)
+                        .padding(.bottom, 14)
+
+                    SportToggle(sport: $state.sport)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 12)
 
                     if !error.isEmpty {
-                        Text(error).foregroundColor(.appLoss).padding()
+                        Text(error).foregroundColor(.csLive).padding()
+                        Spacer()
+                    } else if loading && standings.isEmpty {
+                        Spacer(); ProgressView().tint(.csNBA); Spacer()
                     } else {
-                        // Header
-                        HStack {
-                            Text("Team").frame(maxWidth: .infinity, alignment: .leading)
-                            Text("W").frame(width: 36, alignment: .center)
-                            Text("L").frame(width: 36, alignment: .center)
-                            Text("Win%").frame(width: 48, alignment: .center)
-                            Text("Net").frame(width: 54, alignment: .center)
-                            Text("Str").frame(width: 36, alignment: .center)
-                        }
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.appSub)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(Color.appBg)
-                        Divider().background(Color.appBorder)
-
-                        if loading && standings.isEmpty {
-                            Spacer()
-                            ProgressView().tint(.appPrimary)
-                            Spacer()
-                        } else {
-                            List(Array(standings.enumerated()), id: \.element.id) { idx, s in
-                                StandingRow(standing: s, rank: idx + 1)
-                                    .listRowBackground(idx % 2 == 0 ? Color.appCard.opacity(0.4) : Color.clear)
-                                    .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-                                    .listRowSeparatorTint(Color.appBorder)
+                        ScrollView(.vertical, showsIndicators: false) {
+                            VStack(spacing: 0) {
+                                columnHeader
+                                Divider().background(Color.csBorder)
+                                ForEach(Array(standings.enumerated()), id: \.element.id) { idx, s in
+                                    StandingRow(
+                                        standing: s,
+                                        rank: idx + 1,
+                                        maxAbsNet: maxAbsNet,
+                                        league: state.sport.rawValue,
+                                        highlighted: idx < 4
+                                    )
+                                    if idx < standings.count - 1 {
+                                        Divider().background(Color.csBorder)
+                                    }
+                                }
                             }
-                            .listStyle(.plain)
-                            .refreshable { await load() }
+                            .background(Color.csCard)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 20)
                         }
+                        .refreshable { await load() }
                     }
                 }
             }
+            .toolbarBackground(Color.csBg, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
         }
+        .preferredColorScheme(.light)
         .task { await load() }
         .onChange(of: state.sport) { _, _ in Task { await load() } }
+    }
+
+    private var header: some View {
+        HStack(alignment: .bottom) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("LEAGUE TABLE")
+                    .font(.csSection)
+                    .kerning(1.0)
+                    .foregroundColor(.csSub)
+                Text("Standings")
+                    .font(.csEditorial(40))
+                    .foregroundColor(.csText)
+            }
+            Spacer()
+            Button { Task { await load() } } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(.csNBA)
+                    .frame(width: 36, height: 36)
+                    .background(Color.csCard)
+                    .clipShape(Circle())
+                    .overlay(Circle().strokeBorder(Color.csBorder, lineWidth: 1))
+            }
+        }
+    }
+
+    private var columnHeader: some View {
+        HStack(spacing: 0) {
+            Text("#").font(.csSection).kerning(0.8).foregroundColor(.csSub)
+                .frame(width: 24, alignment: .leading)
+            Text("TEAM").font(.csSection).kerning(1.0).foregroundColor(.csSub)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("W").font(.csSection).kerning(0.8).foregroundColor(.csSub)
+                .frame(width: 28, alignment: .center)
+            Text("L").font(.csSection).kerning(0.8).foregroundColor(.csSub)
+                .frame(width: 28, alignment: .center)
+            Text("PCT").font(.csSection).kerning(0.8).foregroundColor(.csSub)
+                .frame(width: 42, alignment: .center)
+            Text("NET").font(.csSection).kerning(0.8).foregroundColor(.csSub)
+                .frame(width: 64, alignment: .center)
+            Text("STR").font(.csSection).kerning(0.8).foregroundColor(.csSub)
+                .frame(width: 36, alignment: .trailing)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color.csCard)
+    }
+
+    private var maxAbsNet: Double {
+        standings.map { abs($0.netRtg) }.max() ?? 1
     }
 
     private func load() async {
@@ -73,32 +121,81 @@ struct StandingsView: View {
 private struct StandingRow: View {
     let standing: Standing
     let rank: Int
+    let maxAbsNet: Double
+    let league: String
+    let highlighted: Bool
 
     var body: some View {
-        HStack {
-            HStack(spacing: 4) {
-                Text("\(rank)").font(.system(size: 12)).foregroundColor(.appSub).frame(width: 20)
-                Text(standing.Team).font(.system(size: 13)).foregroundColor(.white).lineLimit(1)
+        HStack(spacing: 0) {
+            Text("\(rank)")
+                .font(.csMono(13, weight: .semibold))
+                .foregroundColor(.csSub)
+                .frame(width: 24, alignment: .leading)
+            HStack(spacing: 8) {
+                TeamBadge(team: standing.Team, league: league, size: 22)
+                Text(standing.Team)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.csText)
+                    .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Text("\(standing.W)").cell()
             Text("\(standing.L)").cell()
-            Text(String(format: "%.0f%%", standing.winPct)).cell()
-            Text(String(format: "%+.1f", standing.netRtg))
-                .font(.system(size: 13, weight: .bold))
-                .foregroundColor(standing.netRtg > 0 ? .appWin : standing.netRtg < 0 ? .appLoss : .white)
-                .frame(width: 54, alignment: .center)
+            Text(String(format: "%.0f%%", standing.winPct)).cell(width: 42)
+            NetRatingBar(value: standing.netRtg, maxAbs: maxAbsNet)
+                .frame(width: 64, height: 22)
             Text(standing.Streak)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(standing.Streak.hasPrefix("W") ? .appWin : .appLoss)
-                .frame(width: 36, alignment: .center)
+                .font(.csMono(13, weight: .bold))
+                .foregroundColor(standing.Streak.hasPrefix("W") ? .csWin : .csLoss)
+                .frame(width: 36, alignment: .trailing)
         }
+        .padding(.horizontal, 14)
         .padding(.vertical, 10)
+        .background(highlighted ? Color.csNBA.opacity(0.06) : Color.clear)
+    }
+}
+
+private struct NetRatingBar: View {
+    let value: Double
+    let maxAbs: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let half = w / 2
+            let ratio = maxAbs > 0 ? min(1, abs(value) / maxAbs) : 0
+            let barW = half * ratio
+            ZStack(alignment: .center) {
+                RoundedRectangle(cornerRadius: 3).fill(Color.csChip)
+                    .frame(height: 6)
+                HStack(spacing: 0) {
+                    Spacer()
+                    if value < 0 {
+                        RoundedRectangle(cornerRadius: 3).fill(Color.csLoss)
+                            .frame(width: barW, height: 6)
+                    } else {
+                        Color.clear.frame(width: 0, height: 6)
+                    }
+                    if value > 0 {
+                        RoundedRectangle(cornerRadius: 3).fill(Color.csWin)
+                            .frame(width: barW, height: 6)
+                    } else {
+                        Color.clear.frame(width: 0, height: 6)
+                    }
+                    Spacer()
+                }
+                .frame(width: w)
+                Rectangle().fill(Color.csBorder).frame(width: 1, height: 14)
+            }
+        }
     }
 }
 
 private extension Text {
-    func cell() -> some View {
-        self.font(.system(size: 13)).foregroundColor(.white).frame(width: 36, alignment: .center)
+    func cell(width: CGFloat = 28) -> some View {
+        self
+            .font(.csMono(13, weight: .semibold))
+            .foregroundColor(.csText)
+            .frame(width: width, alignment: .center)
     }
 }
