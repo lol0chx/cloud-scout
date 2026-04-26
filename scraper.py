@@ -107,27 +107,35 @@ def fetch_games(team, season=DEFAULT_SEASON, last=15):
     team_info = _resolve_team(team)
     conn = init_db()
 
-    # Fetch the team's game log for the season
-    time.sleep(REQUEST_DELAY)
-    try:
-        gamelog = TeamGameLog(
-            team_id=team_info["id"],
-            season=season,
-            season_type_all_star="Regular Season",
-        )
-        df = gamelog.get_data_frames()[0]
-    except Exception as e:
-        print(f"Failed to fetch game log for {team}: {e}")
-        conn.close()
-        return []
+    # Fetch the team's game log across Regular Season, Play-In, and Playoffs
+    # so updates keep working through the postseason — TeamGameLog returns
+    # nothing for a season_type the team isn't currently playing in.
+    season_dfs = []
+    for season_type in ("Regular Season", "PlayIn", "Playoffs"):
+        time.sleep(REQUEST_DELAY)
+        try:
+            gamelog = TeamGameLog(
+                team_id=team_info["id"],
+                season=season,
+                season_type_all_star=season_type,
+            )
+            part = gamelog.get_data_frames()[0]
+        except Exception as e:
+            print(f"Failed to fetch {season_type} game log for {team}: {e}")
+            continue
+        if not part.empty:
+            season_dfs.append(part)
 
-    if df.empty:
+    if not season_dfs:
         print(f"No games found for {team_info['full_name']} in {season}.")
         conn.close()
         return []
 
-    # TeamGameLog returns most recent games first — take the last N
-    df = df.head(last)
+    df = pd.concat(season_dfs, ignore_index=True)
+    # Sort newest-first across both season types, then take the last N
+    df["_parsed_date"] = pd.to_datetime(df["GAME_DATE"], format="%b %d, %Y", errors="coerce")
+    df = df.sort_values("_parsed_date", ascending=False).head(last)
+    df = df.drop(columns=["_parsed_date"])
 
     pending_games = []
     for _, row in df.iterrows():
