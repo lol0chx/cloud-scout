@@ -1,120 +1,155 @@
 CloudScout — Available Commands
 ================================
 
-iOS APP (Swift/Xcode):
+All commands run from: /Users/lol/Documents/Repos/cloud-scout
+(unless a section says otherwise)
+
 ================================
-  Run ALL of these from: /Users/lol/Documents/Repos/cloud-scout
-
-  FIRST TIME SETUP (only once):
-       cd /Users/lol/Documents/Repos/cloud-scout
-       python3 -m venv venv
-       venv/bin/pip install -r requirements.txt
-       brew install ngrok
-       ngrok config add-authtoken YOUR_NGROK_TOKEN
-
-  ───────────────────────────────────────────────────────────────
-  OPTION A — Mac and iPhone on the SAME WiFi (no ngrok needed)
-  ───────────────────────────────────────────────────────────────
-
-  Tab 1 — Start the backend bound to your LAN:
-       cd /Users/lol/Documents/Repos/cloud-scout
-       venv/bin/uvicorn api:app --reload --host 0.0.0.0 --port 8000
-
-  Tab 2 — Find your Mac's local IP:
-       ipconfig getifaddr en0
-       → e.g. 192.168.1.42
-       → Open ios/CloudScout/APIClient.swift and replace the fallback string
-         in the `let API_BASE = ...` line with "http://192.168.1.42:8000"
-         (update the quoted URL after the `??`, NOT the env var key in brackets)
-
-  Tab 3 — Open Xcode:
-       cd /Users/lol/Documents/Repos/cloud-scout
-       open ios/CloudScout.xcodeproj
-       → Select your iPhone or a simulator at the top
-       → Press Cmd+R to build and run
-
-  Note: Simulator can also use http://127.0.0.1:8000 (no --host flag needed).
-        If the IP stops working, WiFi reassigned it — rerun ipconfig.
-
-  ───────────────────────────────────────────────────────────────
-  OPTION B — Mac and iPhone on DIFFERENT networks (use ngrok)
-  ───────────────────────────────────────────────────────────────
-
-  Tab 1 — Start the backend:
-       cd /Users/lol/Documents/Repos/cloud-scout
-       venv/bin/uvicorn api:app --reload
-
-  Tab 2 — Start ngrok tunnel:
-       ngrok http 8000
-       → Copy the https://xxxx.ngrok-free.app URL
-       → Open ios/CloudScout/APIClient.swift and replace the fallback string
-         in the `let API_BASE = ...` line with the ngrok URL
-         (update the quoted URL after the `??`, NOT the env var key in brackets)
-       → Rebuild in Xcode (Cmd+R)
-
-  Tab 3 — Open Xcode:
-       cd /Users/lol/Documents/Repos/cloud-scout
-       open ios/CloudScout.xcodeproj
-       → Select your iPhone or a simulator at the top
-       → Press Cmd+R to build and run
-
-  Note: ngrok URL changes every time you restart it (free plan).
-        Update API_BASE in ios/CloudScout/APIClient.swift each time.
-
-MOBILE APP (Expo / React Native — mobile/ directory):
+FIRST TIME SETUP (run once)
 ================================
-  Run ALL of these from: /Users/lol/Documents/Repos/cloud-scout/mobile
+     cd /Users/lol/Documents/Repos/cloud-scout
+     python3 -m venv venv
+     venv/bin/pip install -r requirements.txt
 
-  FIRST TIME SETUP (only once):
-       cd /Users/lol/Documents/Repos/cloud-scout/mobile
-       npm install
+  Optional extras:
+     brew install ngrok                          # only for "Different WiFi" iOS setup
+     ngrok config add-authtoken YOUR_NGROK_TOKEN
+     export ANTHROPIC_API_KEY=sk-ant-...         # only for AI Scout chat features
 
-  ───────────────────────────────────────────────────────────────
-  OPTION A — Mac and phone on the SAME WiFi
-  ───────────────────────────────────────────────────────────────
 
-  Tab 1 — Start the backend bound to your LAN (from repo root):
-       cd /Users/lol/Documents/Repos/cloud-scout
-       venv/bin/uvicorn api:app --reload --host 0.0.0.0 --port 8000
+================================================================
+OPTION 1 — STREAMLIT WEB APP ONLY (easiest, no phone/backend)
+================================================================
+  This runs the full dashboard in your browser. No iOS, no API, no ngrok.
+  Streamlit reads cloudscout.db directly.
 
-  Tab 2 — Find your Mac's local IP:
-       ipconfig getifaddr en0
-       → e.g. 192.168.1.42
+  Without AI Scout chat:
+     cd /Users/lol/Documents/Repos/cloud-scout
+     venv/bin/python3 -m streamlit run app.py
 
-  Tab 3 — Set the API URL for Expo (creates mobile/.env):
-       cd /Users/lol/Documents/Repos/cloud-scout/mobile
-       echo "EXPO_PUBLIC_API_URL=http://192.168.1.42:8000" > .env
+  With AI Scout chat enabled:
+     cd /Users/lol/Documents/Repos/cloud-scout
+     ANTHROPIC_API_KEY=sk-ant-... venv/bin/python3 -m streamlit run app.py
 
-  Tab 4 — Start Expo (clear cache so the new env var is picked up):
-       cd /Users/lol/Documents/Repos/cloud-scout/mobile
-       npx expo start -c
-       → Scan the QR code with the Expo Go app on your phone
+  → Browser opens at http://localhost:8501 automatically.
+  → Press Ctrl+C in the terminal to stop.
 
-  ───────────────────────────────────────────────────────────────
-  OPTION B — Mac and phone on DIFFERENT networks (use ngrok)
-  ───────────────────────────────────────────────────────────────
 
-  Tab 1 — Start the backend:
-       cd /Users/lol/Documents/Repos/cloud-scout
-       venv/bin/uvicorn api:app --reload
+================================================================
+OPTION 2 — iOS APP, SAME WIFI  (Mac + iPhone on same network)
+================================================================
+  Easiest iOS path. No ngrok needed.
 
-  Tab 2 — Start ngrok tunnel:
-       ngrok http 8000
-       → Copy the https://xxxx.ngrok-free.app URL
+  Step 1 — Find your Mac's local IP:
+     ipconfig getifaddr en0
+     → e.g. 192.168.1.42   (use en1 if you're on Ethernet/Thunderbolt)
 
-  Tab 3 — Point Expo at the ngrok URL:
-       cd /Users/lol/Documents/Repos/cloud-scout/mobile
-       echo "EXPO_PUBLIC_API_URL=https://xxxx.ngrok-free.app" > .env
-       npx expo start -c
+  Step 2 — Start the FastAPI backend, bound to your LAN:
+     cd /Users/lol/Documents/Repos/cloud-scout
+     venv/bin/uvicorn api:app --reload --host 0.0.0.0 --port 8000
+
+     (For AI endpoints, prefix with ANTHROPIC_API_KEY=sk-ant-...)
+
+  Step 3 — Point the iOS app at your Mac.
+     Open ios/CloudScout/APIClient.swift, line 5. Replace the URL
+     in quotes after `??` with your Mac's IP. Leave the env-var
+     key in brackets alone:
+
+        let API_BASE = ProcessInfo.processInfo.environment["API_BASE"]
+                       ?? "http://192.168.1.42:8000"
+
+  Step 4 — Build and run:
+     open ios/CloudScout.xcodeproj
+     → Pick your iPhone (or a simulator) from the device menu in Xcode
+     → Press Cmd+R
 
   Notes:
-    - EXPO_PUBLIC_* env vars are baked in at start — you MUST restart
-      Expo (with -c to clear cache) after changing .env.
-    - ngrok URL changes every time you restart it (free plan) —
-      update mobile/.env and restart Expo each time.
+    - Simulator can use http://127.0.0.1:8000 instead — and you can drop
+      `--host 0.0.0.0` from Step 2 in that case.
+    - If the IP stops working later, your router reassigned it. Rerun
+      ipconfig and update APIClient.swift.
 
-python3 -m streamlit run app.py
-ANTHROPIC_API_KEY=sk-ant-... venv/bin/python3 -m streamlit run app.py
+
+================================================================
+OPTION 3 — iOS APP, DIFFERENT WIFI  (phone on cell or another network)
+================================================================
+  Use this when your iPhone can't reach your Mac's LAN. Requires ngrok.
+
+  Step 1 — Start the backend (default localhost is fine):
+     cd /Users/lol/Documents/Repos/cloud-scout
+     venv/bin/uvicorn api:app --reload
+
+     (For AI endpoints, prefix with ANTHROPIC_API_KEY=sk-ant-...)
+
+  Step 2 — Open a public tunnel in a SECOND terminal:
+     ngrok http 8000
+     → Copy the https://xxxx.ngrok-free.app URL ngrok prints.
+
+  Step 3 — Point the iOS app at the tunnel.
+     Open ios/CloudScout/APIClient.swift, line 5. Replace the URL
+     in quotes after `??` with the ngrok URL:
+
+        let API_BASE = ProcessInfo.processInfo.environment["API_BASE"]
+                       ?? "https://xxxx.ngrok-free.app"
+
+  Step 4 — Build and run:
+     open ios/CloudScout.xcodeproj
+     → Pick your iPhone (or a simulator) from the device menu in Xcode
+     → Press Cmd+R
+
+  Notes:
+    - ngrok free plan gives a NEW URL every restart. Update APIClient.swift
+      and rebuild each time you restart ngrok.
+    - Keep both terminals (uvicorn + ngrok) running while you use the app.
+
+
+================================================================
+OPTION 4 — EXPO / REACT NATIVE APP  (mobile/ directory)
+================================================================
+  Run ALL of these from: /Users/lol/Documents/Repos/cloud-scout/mobile
+
+  First time setup (once):
+     cd /Users/lol/Documents/Repos/cloud-scout/mobile
+     npm install
+
+  ─── Same WiFi ──────────────────────────────────────────────
+  Tab 1 — Backend bound to LAN (from repo root):
+     cd /Users/lol/Documents/Repos/cloud-scout
+     venv/bin/uvicorn api:app --reload --host 0.0.0.0 --port 8000
+
+  Tab 2 — Find your Mac's IP:
+     ipconfig getifaddr en0      # e.g. 192.168.1.42
+
+  Tab 3 — Point Expo at your Mac and start it:
+     cd /Users/lol/Documents/Repos/cloud-scout/mobile
+     echo "EXPO_PUBLIC_API_URL=http://192.168.1.42:8000" > .env
+     npx expo start -c
+     → Scan the QR code with Expo Go on your phone.
+
+  ─── Different WiFi (ngrok) ─────────────────────────────────
+  Tab 1 — Backend:
+     cd /Users/lol/Documents/Repos/cloud-scout
+     venv/bin/uvicorn api:app --reload
+
+  Tab 2 — ngrok tunnel:
+     ngrok http 8000
+     → Copy the https://xxxx.ngrok-free.app URL.
+
+  Tab 3 — Point Expo at the tunnel:
+     cd /Users/lol/Documents/Repos/cloud-scout/mobile
+     echo "EXPO_PUBLIC_API_URL=https://xxxx.ngrok-free.app" > .env
+     npx expo start -c
+
+  Notes:
+    - EXPO_PUBLIC_* env vars are baked in at start. You MUST restart Expo
+      with `-c` after editing .env, or the old URL will still be used.
+    - ngrok free URL changes every restart — update mobile/.env and
+      restart Expo each time.
+
+
+================================================================
+COMMAND-LINE TOOLS  (analytics over the local cloudscout.db)
+================================================================
 
 TEAM STATS (recent form, averages, rolling performance):
   python main.py --team "LA Lakers" --last 5
@@ -151,9 +186,6 @@ SCRAPE FRESH DATA (fetch new games from NBA.com before analysis):
 SCRAPE ALL TEAMS (fetch last N games for all 30 NBA teams):
   python main.py --scrape-all --last 15
   python main.py --scrape-all --last 10
-
-WEB DASHBOARD (interactive Streamlit UI):
-  streamlit run app.py
 
 RUN NIGHTLY SCHEDULER (auto-scrapes watchlist teams at midnight):
   python scheduler.py
