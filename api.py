@@ -40,7 +40,7 @@ from mlb_analytics import (
 )
 from mlb_scraper import DEFAULT_SEASON as MLB_DEFAULT_SEASON
 from mlb_scraper import get_all_mlb_teams, scrape_mlb_team
-from scraper import scrape_team, scrape_injuries, fetch_todays_games, fetch_starters, scrape_referees
+from scraper import scrape_team, scrape_injuries, fetch_todays_games, fetch_starters, scrape_referees, live_injuries
 
 app = FastAPI(title="CloudScout API", version="1.0.0")
 
@@ -439,13 +439,17 @@ def refresh_injuries(league: str = "NBA"):
 
 @app.get("/injuries")
 def get_injuries(league: str = "NBA", team: str = ""):
-    """Get current injury report, optionally filtered by team."""
-    conn = _conn()
-    try:
-        df = load_injuries(conn, team=team or None, league=league.upper())
-        return _to_json(df)
-    finally:
-        conn.close()
+    """
+    Get the current injury report, optionally filtered by team.
+
+    Always pulls a fresh ESPN snapshot first (and persists it to the local
+    DB), matching the live behavior of /games/today. Falls back to the
+    cached DB rows if the ESPN fetch fails.
+    """
+    df = live_injuries(league.upper())
+    if team:
+        df = df[df["team"] == team]
+    return _to_json(df)
 
 
 # ── Today's Games & Starters ────────────────────────────────────────────────

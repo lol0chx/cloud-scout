@@ -21,7 +21,7 @@ from nba_api.stats.endpoints import TeamGameLog, BoxScoreTraditionalV3
 
 from database import (
     init_db, game_exists, insert_game, insert_players,
-    clear_injuries, upsert_injuries,
+    clear_injuries, upsert_injuries, load_injuries,
     clear_referee_stats, upsert_referee_stats,
     clear_referee_assignments, upsert_referee_assignments,
 )
@@ -478,6 +478,27 @@ def scrape_injuries(league="NBA"):
     conn.close()
     print(f"Saved {len(injuries)} {league} injuries to database.")
     return injuries
+
+
+def live_injuries(league="NBA"):
+    """
+    Fetch the current ESPN injury report, persist it to the local DB,
+    and return the records as a DataFrame.
+
+    Mirrors the always-fresh behavior of `fetch_todays_games()` while
+    still keeping a local copy on disk so a network blip never empties
+    the feed. If the ESPN call fails or returns nothing, falls back to
+    whatever is already in the DB.
+    """
+    fresh = fetch_injuries(league)
+    conn = init_db()
+    try:
+        if fresh:
+            clear_injuries(conn, league)
+            upsert_injuries(conn, fresh)
+        return load_injuries(conn, league=league)
+    finally:
+        conn.close()
 
 
 # ── Today's Scoreboard & Projected Starters ─────────────────────────────────

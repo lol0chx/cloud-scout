@@ -13,7 +13,7 @@ import pandas as pd
 from nba_api.stats.static import teams as nba_teams
 
 from database import init_db, load_games, load_players, load_mlb_players, load_injuries, load_referee_stats, load_referee_assignments
-from scraper import scrape_team, scrape_injuries, fetch_todays_games, fetch_starters, scrape_referees
+from scraper import scrape_team, scrape_injuries, fetch_todays_games, fetch_starters, scrape_referees, live_injuries
 from mlb_scraper import scrape_mlb_team, get_all_mlb_teams, DEFAULT_SEASON as MLB_DEFAULT_SEASON
 from analytics import (
     last_n_avg,
@@ -389,8 +389,11 @@ with tab_home:
     mlb_home_df = load_games(conn, league="MLB")
     nba_players_home = load_players(conn)
     mlb_players_home = load_mlb_players(conn)
-    nba_injuries_home = load_injuries(conn, league="NBA")
-    mlb_injuries_home = load_injuries(conn, league="MLB")
+    # Pull the live ESPN injury report each render — same pattern as
+    # `fetch_todays_games()`. The wrapper also writes the fresh records back
+    # to cloudscout.db, and falls back to the cached DB rows on network failure.
+    nba_injuries_home = live_injuries("NBA")
+    mlb_injuries_home = live_injuries("MLB")
 
     def _fmt_date(d):
         try:
