@@ -389,6 +389,8 @@ with tab_home:
     mlb_home_df = load_games(conn, league="MLB")
     nba_players_home = load_players(conn)
     mlb_players_home = load_mlb_players(conn)
+    nba_injuries_home = load_injuries(conn, league="NBA")
+    mlb_injuries_home = load_injuries(conn, league="MLB")
 
     def _fmt_date(d):
         try:
@@ -406,96 +408,126 @@ with tab_home:
         except Exception:
             return str(d)
 
-    def _nba_perf_tag(pts, reb, ast, stl, blk):
-        dd = sum(1 for v in [pts, reb, ast, stl, blk] if v >= 10)
-        if dd >= 3: return "TRIPLE-DOUBLE", "img-perf-triple"
-        if dd == 2 and pts >= 20: return "DOUBLE-DOUBLE", "img-perf"
-        if pts >= 40: return f"{pts}-POINT EXPLOSION", "img-perf"
-        if pts >= 30: return f"{pts}-POINT NIGHT", "img-perf"
-        return None, None
+    def _latest_season_player_ids(games_df):
+        if games_df.empty: return None
+        latest = games_df["season"].max()
+        return set(games_df[games_df["season"] == latest]["id"].tolist())
 
-    # Build a unified list of posts from both sports
+    # League-wide top performers — mirrors the intent of iOS HomeView's
+    # `API.topPerformers(league:, n: 10)` call (no team scope).
+    def _league_top_nba(players_df, games_df):
+        if players_df.empty: return pd.DataFrame()
+        ids = _latest_season_player_ids(games_df)
+        df = players_df[players_df["game_id"].isin(ids)] if ids is not None else players_df
+        if df.empty: return pd.DataFrame()
+        grouped = df.groupby(["name", "team"], as_index=False).agg(
+            avg_points=("points", "mean"),
+            avg_assists=("assists", "mean"),
+            avg_rebounds=("rebounds", "mean"),
+            games=("game_id", "count"),
+        )
+        grouped = grouped[grouped["games"] >= 10]
+        for c in ["avg_points", "avg_assists", "avg_rebounds"]:
+            grouped[c] = grouped[c].round(1)
+        return grouped.sort_values("avg_points", ascending=False).reset_index(drop=True)
+
+    def _league_top_mlb_bat(players_df, games_df):
+        if players_df.empty: return pd.DataFrame()
+        ids = _latest_season_player_ids(games_df)
+        df = players_df[players_df["game_id"].isin(ids)] if ids is not None else players_df
+        bat = df[df["role"] == "batter"]
+        if bat.empty: return pd.DataFrame()
+        grouped = bat.groupby(["name", "team"], as_index=False).agg(
+            games=("game_id", "count"),
+            total_ab=("at_bats", "sum"),
+            total_hits=("hits", "sum"),
+            HR=("home_runs", "sum"),
+            RBI=("rbi", "sum"),
+        )
+        grouped = grouped[grouped["games"] >= 5]
+        grouped["AVG"] = grouped.apply(
+            lambda r: round(r["total_hits"] / r["total_ab"], 3) if r["total_ab"] > 0 else 0.0,
+            axis=1,
+        )
+        return grouped.sort_values("HR", ascending=False).reset_index(drop=True)
+
+    def _league_top_mlb_pit(players_df, games_df):
+        if players_df.empty: return pd.DataFrame()
+        ids = _latest_season_player_ids(games_df)
+        df = players_df[players_df["game_id"].isin(ids)] if ids is not None else players_df
+        pit = df[df["role"] == "pitcher"]
+        if pit.empty: return pd.DataFrame()
+        grouped = pit.groupby(["name", "team"], as_index=False).agg(
+            games=("game_id", "count"),
+            IP=("innings_pitched", "sum"),
+            ER=("earned_runs", "sum"),
+            H=("hits_allowed", "sum"),
+            BB=("walks_allowed", "sum"),
+            SO=("strikeouts_pitched", "sum"),
+        )
+        grouped = grouped[(grouped["games"] >= 3) & (grouped["IP"] >= 5)]
+        if grouped.empty: return pd.DataFrame()
+        grouped["ERA"] = grouped.apply(lambda r: round(9.0 * r["ER"] / r["IP"], 2), axis=1)
+        grouped["WHIP"] = grouped.apply(lambda r: round((r["BB"] + r["H"]) / r["IP"], 2), axis=1)
+        return grouped.sort_values("ERA").reset_index(drop=True)
+
+    # Mirror iOS makeInjuryFeed: group by team, sort by out-count then total.
+    def _injury_feed(injuries_df):
+        if injuries_df.empty: return []
+        rank = {"out": 0, "doubtful": 1, "questionable": 2, "day-to-day": 2}
+        out = []
+        for team, grp in injuries_df.groupby("team"):
+            sorted_grp = grp.assign(__r=grp["status"].str.lower().map(lambda s: rank.get(s, 3))) \
+                            .sort_values("__r")
+            out_count = int((grp["status"].str.lower() == "out").sum())
+            out.append({
+                "team": team,
+                "count": int(len(grp)),
+                "out_count": out_count,
+                "players": sorted_grp.head(3).to_dict("records"),
+            })
+        out.sort(key=lambda x: (-x["out_count"], -x["count"]))
+        return out
+
+    # Build feed in the same order as iOS HomeView (Views/HomeView.swift):
+    # today's NBA games → 3 NBA recent → 3 NBA top performers → 2 NBA injury teams →
+    # MLB divider → 3 MLB recent → 2 MLB top batters → 1 MLB top pitcher → 2 MLB injury teams.
     posts = []
 
-    # NBA: one game post per recent game + standout performance posts
-    for _, g in nba_home_df.sort_values("date", ascending=False).head(4).iterrows():
+    try:
+        todays = fetch_todays_games()
+    except Exception:
+        todays = []
+    for tg in todays:
+        posts.append({"type": "live_game", "data": tg})
+
+    for _, g in nba_home_df.sort_values("date", ascending=False).head(3).iterrows():
         posts.append({"type": "nba_game", "date": g["date"], "data": g})
-        gp = nba_players_home[nba_players_home["game_id"] == g["id"]]
-        for _, p in gp.iterrows():
-            pts = int(p.get("points") or 0)
-            reb = int(p.get("rebounds") or 0)
-            ast = int(p.get("assists") or 0)
-            stl = int(p.get("steals") or 0)
-            blk = int(p.get("blocks") or 0)
-            tag, img_cls = _nba_perf_tag(pts, reb, ast, stl, blk)
-            if tag:
-                posts.append({
-                    "type": "nba_perf", "date": g["date"], "tag": tag, "img_cls": img_cls,
-                    "player": p["name"], "team": p["team"], "opponent": g["away_team"] if p["team"] == g["home_team"] else g["home_team"],
-                    "pts": pts, "reb": reb, "ast": ast, "stl": stl, "blk": blk,
-                })
 
-    # MLB: game + batter + pitcher gems
-    for _, g in mlb_home_df.sort_values("date", ascending=False).head(4).iterrows():
+    nba_top = _league_top_nba(nba_players_home, nba_home_df)
+    for _, p in nba_top.head(3).iterrows():
+        posts.append({"type": "nba_perf", "data": p})
+
+    for s in _injury_feed(nba_injuries_home)[:2]:
+        posts.append({"type": "injury_summary", "league": "NBA", "data": s})
+
+    has_mlb = (not mlb_home_df.empty) or (not mlb_players_home.empty) or (not mlb_injuries_home.empty)
+    if has_mlb:
+        posts.append({"type": "mlb_divider"})
+
+    for _, g in mlb_home_df.sort_values("date", ascending=False).head(3).iterrows():
         posts.append({"type": "mlb_game", "date": g["date"], "data": g})
-        gp = mlb_players_home[mlb_players_home["game_id"] == g["id"]]
-        for _, p in gp.iterrows():
-            if p.get("role") == "batter":
-                hr = int(p.get("home_runs") or 0)
-                hits = int(p.get("hits") or 0)
-                rbi = int(p.get("rbi") or 0)
-                runs = int(p.get("runs") or 0)
-                ab = int(p.get("at_bats") or 0)
-                tag = None
-                img_cls = "img-perf"
-                if hr >= 2:
-                    tag = f"{hr}-HOMER GAME"; img_cls = "img-perf-triple"
-                elif hits >= 4:
-                    tag = f"{hits}-HIT GAME"
-                elif rbi >= 5:
-                    tag = f"{rbi}-RBI NIGHT"
-                if tag:
-                    opp = g["away_team"] if p["team"] == g["home_team"] else g["home_team"]
-                    posts.append({
-                        "type": "mlb_bat", "date": g["date"], "tag": tag, "img_cls": img_cls,
-                        "player": p["name"], "team": p["team"], "opponent": opp,
-                        "hits": hits, "ab": ab, "hr": hr, "rbi": rbi, "runs": runs,
-                    })
-            else:  # pitcher
-                ip = float(p.get("innings_pitched") or 0)
-                er = int(p.get("earned_runs") or 0)
-                k = int(p.get("strikeouts_pitched") or 0)
-                ha = int(p.get("hits_allowed") or 0)
-                bb = int(p.get("walks_allowed") or 0)
-                tag = None
-                if k >= 10:
-                    tag = f"{k}-STRIKEOUT GEM"
-                elif ip >= 7 and er <= 1:
-                    tag = "DOMINANT OUTING"
-                if tag:
-                    opp = g["away_team"] if p["team"] == g["home_team"] else g["home_team"]
-                    posts.append({
-                        "type": "mlb_pit", "date": g["date"], "tag": tag, "img_cls": "img-perf-pitch",
-                        "player": p["name"], "team": p["team"], "opponent": opp,
-                        "ip": ip, "er": er, "k": k, "ha": ha, "bb": bb,
-                    })
 
-    # Leader post — top scorer across the recent NBA games (if any)
-    leader_post = None
-    if not nba_players_home.empty and not nba_home_df.empty:
-        recent_ids = set(nba_home_df.sort_values("date", ascending=False).head(6)["id"].tolist())
-        rp = nba_players_home[nba_players_home["game_id"].isin(recent_ids)]
-        if not rp.empty:
-            top3 = rp.groupby(["name", "team"], as_index=False)["points"].mean().round(1).nlargest(3, "points")
-            if not top3.empty:
-                leader_post = {
-                    "type": "nba_leaders", "date": nba_home_df["date"].max(),
-                    "items": top3.to_dict("records"),
-                }
+    mlb_bat_top = _league_top_mlb_bat(mlb_players_home, mlb_home_df)
+    for _, p in mlb_bat_top.head(2).iterrows():
+        posts.append({"type": "mlb_bat", "data": p})
 
-    posts.sort(key=lambda x: x["date"], reverse=True)
-    if leader_post:
-        posts.insert(min(2, len(posts)), leader_post)
+    mlb_pit_top = _league_top_mlb_pit(mlb_players_home, mlb_home_df)
+    for _, p in mlb_pit_top.head(1).iterrows():
+        posts.append({"type": "mlb_pit", "data": p})
+
+    for s in _injury_feed(mlb_injuries_home)[:2]:
+        posts.append({"type": "injury_summary", "league": "MLB", "data": s})
 
     # ── Filter bar (Instagram-style stories) ─────────────────────────────────
     st.markdown('<div class="ig-wrap">', unsafe_allow_html=True)
@@ -508,17 +540,15 @@ with tab_home:
     story_cols = st.columns(6)
     stories = [
         ("🏟", "For You", "All"),
-        ("🏀", "NBA", "🏀 NBA"),
-        ("⚾", "MLB", "⚾ MLB"),
-        ("🔥", "Hot", "🔥 Performances"),
-        ("📊", "Games", "📊 Games"),
-        ("⭐", "Stars", "All"),  # Stars shows all to highlight standout performances
+        ("🏀", "NBA", "NBA"),
+        ("⚾", "MLB", "MLB"),
+        ("🔴", "Live", "Live"),
+        ("⭐", "Stars", "Stars"),
+        ("🏥", "Injuries", "Injuries"),
     ]
 
     for idx, (icon, label, category_val) in enumerate(stories):
         with story_cols[idx]:
-            is_active = st.session_state.home_filter == category_val
-            border_style = "4px solid #ef4444" if is_active else "2px solid #cbd5e1"
             if st.button(
                 f"{icon}\n{label}",
                 key=f"story_{label}",
@@ -530,17 +560,29 @@ with tab_home:
 
     category = st.session_state.home_filter
 
-    # Filter function
     def _keep(post):
         t = post["type"]
-        if category == "All": return True
-        if category == "🏀 NBA": return t.startswith("nba")
-        if category == "⚾ MLB": return t.startswith("mlb")
-        if category == "🔥 Performances": return t in ("nba_perf", "mlb_bat", "mlb_pit")
-        if category == "📊 Games": return t in ("nba_game", "mlb_game")
+        if category == "All":
+            return True
+        if category == "NBA":
+            if t == "mlb_divider": return False
+            if t == "injury_summary": return post.get("league") == "NBA"
+            return t in ("live_game", "nba_game", "nba_perf")
+        if category == "MLB":
+            if t == "injury_summary": return post.get("league") == "MLB"
+            return t in ("mlb_divider", "mlb_game", "mlb_bat", "mlb_pit")
+        if category == "Live":
+            return t == "live_game"
+        if category == "Stars":
+            return t in ("nba_perf", "mlb_bat", "mlb_pit")
+        if category == "Injuries":
+            return t == "injury_summary"
         return True
 
     filtered_posts = [p for p in posts if _keep(p)]
+    # Drop a leading divider if NBA section was filtered away.
+    while filtered_posts and filtered_posts[0]["type"] == "mlb_divider":
+        filtered_posts.pop(0)
 
     if not filtered_posts:
         st.info("📊 No posts for this filter — scrape some teams from the sidebar to fill your feed.")
@@ -583,7 +625,7 @@ with tab_home:
                 <div class="game-winner">🏆 {winner} win</div>
                 <div class="game-meta">Final · Margin {margin}</div>
               </div>
-              <div class="ig-actions">❤️ &nbsp; 💬 &nbsp; 🔁 &nbsp; 🔖</div>
+              <div class="ig-actions">🔁 &nbsp; 🔖</div>
               <div class="ig-caption"><b>{matchup}</b> — {winner} take it by <b>{margin}</b>! 🏆</div>
               <div class="ig-footer">{_fmt_date(g["date"])}</div>
             </div>
@@ -623,214 +665,173 @@ with tab_home:
                 <div class="game-winner">🏆 {winner} win</div>
                 <div class="game-meta">Final · {margin}-run margin</div>
               </div>
-              <div class="ig-actions">❤️ &nbsp; 💬 &nbsp; 🔁 &nbsp; 🔖</div>
+              <div class="ig-actions">🔁 &nbsp; 🔖</div>
               <div class="ig-caption"><b>{matchup}</b> — {winner} wins {hs if home_win else as_}–{as_ if home_win else hs}! ⚾</div>
               <div class="ig-footer">{_fmt_date(g["date"])}</div>
             </div>
             """, unsafe_allow_html=True)
 
+        elif t == "live_game":
+            g = post["data"]
+            home_full = g.get("home_team_full") or g.get("home_team") or ""
+            away_full = g.get("away_team_full") or g.get("away_team") or ""
+            status_code = g.get("game_status", 0)
+            if status_code == 2:
+                status_label, status_color = "LIVE NOW", "#ef4444"
+            elif status_code == 3:
+                status_label, status_color = "FINAL", "#0f172a"
+            else:
+                status_label, status_color = "TODAY", "#3b82f6"
+            short_away = (g.get("away_team") or "").split()[-1] or away_full.split()[-1]
+            short_home = (g.get("home_team") or "").split()[-1] or home_full.split()[-1]
+            matchup = f"{short_away} @ {short_home}"
+            st.markdown(f"""
+            <div class="ig-post">
+              <div class="ig-head">
+                <div class="ig-avatar ava-nba">🏀</div>
+                <div>
+                  <div class="ig-handle">{matchup}</div>
+                  <div class="ig-sub">NBA Today · {g.get("status", "Scheduled")}</div>
+                </div>
+              </div>
+              <div class="ig-image img-game-nba">
+                <div class="perf-headline" style="color:{status_color}; background:#fff; padding:4px 10px; border-radius:999px; display:inline-block; align-self:center;">{status_label}</div>
+                <div class="perf-name" style="margin-top:14px;">{matchup}</div>
+                <div class="perf-team-row">{away_full} @ {home_full}</div>
+              </div>
+              <div class="ig-actions">🔁 &nbsp; 🔖</div>
+              <div class="ig-caption"><b>{away_full}</b> at <b>{home_full}</b> — {g.get("status", "Today")}.</div>
+            </div>
+            """, unsafe_allow_html=True)
+
         elif t == "nba_perf":
-            team_short = post["team"].split()[-1]
-            matchup = f"{team_short} vs {post['opponent'].split()[-1]}"
+            p = post["data"]
             st.markdown(f"""
             <div class="ig-post">
               <div class="ig-head">
                 <div class="ig-avatar ava-star">⭐</div>
                 <div>
-                  <div class="ig-handle">{matchup}</div>
-                  <div class="ig-sub">Standout · {_fmt_rel(post["date"])}</div>
+                  <div class="ig-handle">{p["name"]}</div>
+                  <div class="ig-sub">NBA · Top performer · {int(p["games"])} GP</div>
                 </div>
               </div>
-              <div class="ig-image {post["img_cls"]}">
-                <div class="perf-headline">{post["tag"]}</div>
-                <div class="perf-name">{post["player"]}</div>
-                <div class="perf-team-row">{post["team"]} vs {post["opponent"]}</div>
+              <div class="ig-image img-perf">
+                <div class="perf-headline">SEASON LEADER</div>
+                <div class="perf-name">{p["name"]}</div>
+                <div class="perf-team-row">{p["team"]}</div>
                 <div class="perf-stats">
-                  <div class="perf-stat-box"><div class="perf-stat-num">{post["pts"]}</div><div class="perf-stat-lbl">PTS</div></div>
-                  <div class="perf-stat-box"><div class="perf-stat-num">{post["reb"]}</div><div class="perf-stat-lbl">REB</div></div>
-                  <div class="perf-stat-box"><div class="perf-stat-num">{post["ast"]}</div><div class="perf-stat-lbl">AST</div></div>
-                  <div class="perf-stat-box"><div class="perf-stat-num">{post["stl"]}</div><div class="perf-stat-lbl">STL</div></div>
-                  <div class="perf-stat-box"><div class="perf-stat-num">{post["blk"]}</div><div class="perf-stat-lbl">BLK</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{p["avg_points"]}</div><div class="perf-stat-lbl">PTS</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{p["avg_assists"]}</div><div class="perf-stat-lbl">AST</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{p["avg_rebounds"]}</div><div class="perf-stat-lbl">REB</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{int(p["games"])}</div><div class="perf-stat-lbl">GP</div></div>
                 </div>
               </div>
-              <div class="ig-actions">❤️ &nbsp; 💬 &nbsp; 🔁 &nbsp; 🔖</div>
-              <div class="ig-caption"><b>{post["player"]}</b> — {post["tag"]} vs {post["opponent"]}! 🔥 #{post["tag"].replace(" ", "").replace("-", "")}</div>
-              <div class="ig-footer">{_fmt_date(post["date"])}</div>
+              <div class="ig-actions">🔁 &nbsp; 🔖</div>
+              <div class="ig-caption"><b>{p["name"]}</b> — {p["avg_points"]} PPG over {int(p["games"])} games. 🔥</div>
             </div>
             """, unsafe_allow_html=True)
 
         elif t == "mlb_bat":
-            team_short = post["team"].split()[-1]
-            matchup = f"{team_short} vs {post['opponent'].split()[-1]}"
+            p = post["data"]
+            avg = float(p.get("AVG", 0.0))
             st.markdown(f"""
             <div class="ig-post">
               <div class="ig-head">
-                <div class="ig-avatar ava-star">🔥</div>
+                <div class="ig-avatar ava-mlb">⚾</div>
                 <div>
-                  <div class="ig-handle">{matchup}</div>
-                  <div class="ig-sub">Hot Bat · {_fmt_rel(post["date"])}</div>
+                  <div class="ig-handle">{p["name"]}</div>
+                  <div class="ig-sub">MLB · Top batter · {int(p["games"])} G</div>
                 </div>
               </div>
-              <div class="ig-image {post["img_cls"]}">
-                <div class="perf-headline">{post["tag"]}</div>
-                <div class="perf-name">{post["player"]}</div>
-                <div class="perf-team-row">{post["team"]} vs {post["opponent"]}</div>
+              <div class="ig-image img-perf-triple">
+                <div class="perf-headline">SEASON LEADER</div>
+                <div class="perf-name">{p["name"]}</div>
+                <div class="perf-team-row">{p["team"]}</div>
                 <div class="perf-stats">
-                  <div class="perf-stat-box"><div class="perf-stat-num">{post["hits"]}/{post["ab"]}</div><div class="perf-stat-lbl">H/AB</div></div>
-                  <div class="perf-stat-box"><div class="perf-stat-num">{post["hr"]}</div><div class="perf-stat-lbl">HR</div></div>
-                  <div class="perf-stat-box"><div class="perf-stat-num">{post["rbi"]}</div><div class="perf-stat-lbl">RBI</div></div>
-                  <div class="perf-stat-box"><div class="perf-stat-num">{post["runs"]}</div><div class="perf-stat-lbl">R</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{avg:.3f}</div><div class="perf-stat-lbl">AVG</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{int(p["HR"])}</div><div class="perf-stat-lbl">HR</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{int(p["RBI"])}</div><div class="perf-stat-lbl">RBI</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{int(p["games"])}</div><div class="perf-stat-lbl">G</div></div>
                 </div>
               </div>
-              <div class="ig-actions">❤️ &nbsp; 💬 &nbsp; 🔁 &nbsp; 🔖</div>
-              <div class="ig-caption"><b>{post["player"]}</b> — {post["tag"]} vs {post["opponent"]}! 🔥</div>
-              <div class="ig-footer">{_fmt_date(post["date"])}</div>
+              <div class="ig-actions">🔁 &nbsp; 🔖</div>
+              <div class="ig-caption"><b>{p["name"]}</b> — {int(p["HR"])} HR, {avg:.3f} AVG.</div>
             </div>
             """, unsafe_allow_html=True)
 
         elif t == "mlb_pit":
-            team_short = post["team"].split()[-1]
-            matchup = f"{team_short} vs {post['opponent'].split()[-1]}"
+            p = post["data"]
+            era = float(p.get("ERA", 0.0))
+            whip = float(p.get("WHIP", 0.0))
             st.markdown(f"""
             <div class="ig-post">
               <div class="ig-head">
-                <div class="ig-avatar ava-star">🎯</div>
+                <div class="ig-avatar ava-mlb">⚾</div>
                 <div>
-                  <div class="ig-handle">{matchup}</div>
-                  <div class="ig-sub">Gem on Mound · {_fmt_rel(post["date"])}</div>
+                  <div class="ig-handle">{p["name"]}</div>
+                  <div class="ig-sub">MLB · Top pitcher · {int(p["games"])} G</div>
                 </div>
               </div>
-              <div class="ig-image {post["img_cls"]}">
-                <div class="perf-headline">{post["tag"]}</div>
-                <div class="perf-name">{post["player"]}</div>
-                <div class="perf-team-row">{post["team"]} vs {post["opponent"]}</div>
+              <div class="ig-image img-perf-pitch">
+                <div class="perf-headline">SEASON LEADER</div>
+                <div class="perf-name">{p["name"]}</div>
+                <div class="perf-team-row">{p["team"]}</div>
                 <div class="perf-stats">
-                  <div class="perf-stat-box"><div class="perf-stat-num">{post["ip"]}</div><div class="perf-stat-lbl">IP</div></div>
-                  <div class="perf-stat-box"><div class="perf-stat-num">{post["k"]}</div><div class="perf-stat-lbl">K</div></div>
-                  <div class="perf-stat-box"><div class="perf-stat-num">{post["er"]}</div><div class="perf-stat-lbl">ER</div></div>
-                  <div class="perf-stat-box"><div class="perf-stat-num">{post["ha"]}</div><div class="perf-stat-lbl">H</div></div>
-                  <div class="perf-stat-box"><div class="perf-stat-num">{post["bb"]}</div><div class="perf-stat-lbl">BB</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{era:.2f}</div><div class="perf-stat-lbl">ERA</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{whip:.2f}</div><div class="perf-stat-lbl">WHIP</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{int(p["SO"])}</div><div class="perf-stat-lbl">K</div></div>
+                  <div class="perf-stat-box"><div class="perf-stat-num">{int(p["games"])}</div><div class="perf-stat-lbl">G</div></div>
                 </div>
               </div>
-              <div class="ig-actions">❤️ &nbsp; 💬 &nbsp; 🔁 &nbsp; 🔖</div>
-              <div class="ig-caption"><b>{post["player"]}</b> — {post["tag"]} vs {post["opponent"]}! 🎯</div>
-              <div class="ig-footer">{_fmt_date(post["date"])}</div>
+              <div class="ig-actions">🔁 &nbsp; 🔖</div>
+              <div class="ig-caption"><b>{p["name"]}</b> — {era:.2f} ERA, {int(p["SO"])} K.</div>
             </div>
             """, unsafe_allow_html=True)
 
-        elif t == "nba_leaders":
-            # Initialize session state for this post
-            post_key = "nba_leaders_post"
-            if post_key not in st.session_state:
-                st.session_state[post_key] = {"likes": 0, "liked": False, "show_comments": False, "comments": []}
-
-            medals = ["🥇", "🥈", "🥉"]
+        elif t == "injury_summary":
+            s = post["data"]
+            league = post["league"]
+            avatar_cls = "ava-nba" if league == "NBA" else "ava-mlb"
+            icon = "🏀" if league == "NBA" else "⚾"
+            if s["out_count"] > 0:
+                headline = f"{s['team']} shorthanded with {s['out_count']} out"
+            else:
+                headline = f"{s['team']} carry {s['count']} listed injuries"
+            rows = ""
+            for inj in s["players"]:
+                status = (inj.get("status") or "").upper()
+                rows += (
+                    "<div style='display:flex; justify-content:space-between; align-items:center; "
+                    "padding:6px 0; border-top:1px solid #f1f5f9; font-size:13px;'>"
+                    f"<span style='color:#0f172a; font-weight:600;'>{inj.get('player_name','')}</span>"
+                    f"<span style='color:#64748b; font-size:11px; font-weight:700; letter-spacing:0.5px;'>{status}</span>"
+                    "</div>"
+                )
             st.markdown(f"""
-            <div class="ig-post" style="margin-bottom: 18px;">
+            <div class="ig-post">
               <div class="ig-head">
-                <div class="ig-avatar ava-leader" style="font-size: 16px;">📊</div>
+                <div class="ig-avatar {avatar_cls}">{icon}</div>
                 <div>
-                  <div class="ig-handle">stat_central</div>
-                  <div class="ig-sub">Leaderboard · Last 6 games</div>
+                  <div class="ig-handle">Injury Report · {s['team']}</div>
+                  <div class="ig-sub">{league} · {s['count']} listed</div>
                 </div>
               </div>
+              <div style="padding: 14px 16px;">
+                <div style="font-weight: 700; font-size: 16px; color: #0f172a; margin-bottom: 8px;">{headline}</div>
+                {rows}
+              </div>
+              <div class="ig-actions">🔁 &nbsp; 🔖</div>
             </div>
             """, unsafe_allow_html=True)
 
-            # Display each player in a nice card
-            for i, item in enumerate(post["items"]):
-                col1, col2 = st.columns([0.15, 0.85])
-                with col1:
-                    st.markdown(f"""
-                    <div style="font-size: 28px; text-align: center; margin-top: 8px;">
-                        {medals[i]}
-                    </div>
-                    """, unsafe_allow_html=True)
-                with col2:
-                    st.markdown(f"""
-                    <div style="background: #f8fafc; border-radius: 10px; padding: 12px 14px; margin-bottom: 10px;">
-                        <div style="font-weight: 700; font-size: 15px; color: #0f172a; margin-bottom: 3px;">
-                            {item["name"]}
-                        </div>
-                        <div style="font-size: 13px; color: #64748b; margin-bottom: 6px;">
-                            {item["team"]}
-                        </div>
-                        <div style="font-size: 20px; font-weight: 900; color: #3b82f6;">
-                            {item["points"]}<span style="font-size: 12px; color: #94a3b8; font-weight: 600;"> PPG</span>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-            # Actions row
+        elif t == "mlb_divider":
             st.markdown("""
-            <div style="border-top: 1px solid #f1f5f9; padding-top: 10px; margin-top: 10px;"></div>
-            """, unsafe_allow_html=True)
-
-            actions_col1, actions_col2, actions_col3, actions_col4 = st.columns(4)
-
-            # Like button
-            with actions_col1:
-                like_text = "❤️ Liked" if st.session_state[post_key]["liked"] else "🤍 Like"
-                if st.button(like_text, key=f"{post_key}_like", use_container_width=True):
-                    st.session_state[post_key]["liked"] = not st.session_state[post_key]["liked"]
-                    if st.session_state[post_key]["liked"]:
-                        st.session_state[post_key]["likes"] += 1
-                    else:
-                        st.session_state[post_key]["likes"] -= 1
-                    st.rerun()
-
-            # Comment button
-            with actions_col2:
-                if st.button("💬 Comment", key=f"{post_key}_comment", use_container_width=True):
-                    st.session_state[post_key]["show_comments"] = not st.session_state[post_key]["show_comments"]
-                    st.rerun()
-
-            # Share button
-            with actions_col3:
-                if st.button("🔁 Share", key=f"{post_key}_share", use_container_width=True):
-                    st.toast("📤 Shared!", icon="✅")
-
-            # Save button
-            with actions_col4:
-                if st.button("🔖 Save", key=f"{post_key}_save", use_container_width=True):
-                    st.toast("📌 Saved!", icon="✅")
-
-            # Display likes count
-            st.markdown(f"""
-            <div style="padding: 8px 0; font-size: 12px; font-weight: 600; color: #0f172a;">
-                ❤️ <b>{st.session_state[post_key]["likes"]} likes</b>
+            <div style="display:flex; align-items:center; gap:12px; margin: 14px 0 18px 0; padding: 0 4px;">
+              <div style="flex:1; height:1px; background:#e2e8f0;"></div>
+              <div style="font-size:11px; font-weight:800; letter-spacing:1.4px; color:#dc2626;">⚾ MLB</div>
+              <div style="flex:1; height:1px; background:#e2e8f0;"></div>
             </div>
             """, unsafe_allow_html=True)
-
-            # Caption
-            st.caption("**stat_central** Who's lighting it up right now? 🔥")
-
-            # Comment section (if expanded)
-            if st.session_state[post_key]["show_comments"]:
-                st.divider()
-                st.markdown("**Comments**")
-
-                # Display existing comments
-                if st.session_state[post_key]["comments"]:
-                    for comment in st.session_state[post_key]["comments"]:
-                        st.markdown(f"👤 **{comment['user']}**: {comment['text']}")
-                else:
-                    st.caption("No comments yet. Be the first!")
-
-                # Comment input
-                col_input, col_btn = st.columns([0.85, 0.15])
-                with col_input:
-                    comment_text = st.text_input("Add a comment...", key=f"{post_key}_input", label_visibility="collapsed")
-                with col_btn:
-                    if st.button("Post", key=f"{post_key}_post", use_container_width=True):
-                        if comment_text.strip():
-                            st.session_state[post_key]["comments"].append({
-                                "user": "You",
-                                "text": comment_text
-                            })
-                            st.rerun()
-                        else:
-                            st.warning("Comment cannot be empty")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
