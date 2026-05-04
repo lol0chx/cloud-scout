@@ -78,9 +78,32 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ── Card-click navigation handler ─────────────────────────────────────────────
+# Today's-matchup cards on the Home feed are wrapped in an <a href="?..."> so
+# clicking the card itself (no buttons) deep-links to the Predictions tab with
+# the right teams pre-selected, mirroring iOS HomeView's pendingPredictMatchup.
+# We translate the query params into widget defaults BEFORE any widget renders,
+# since Streamlit forbids mutating a widget's state after it has rendered.
+_qp = st.query_params
+if "nav_predict" in _qp:
+    _away = _qp.get("away", "")
+    _home = _qp.get("home", "")
+    st.query_params.clear()
+    st.session_state["active_tab"] = "Predictions"
+    st.session_state["sport_select"] = "🏀 NBA"
+    if _away:
+        st.session_state["h2h_a"] = _away
+    if _home:
+        st.session_state["h2h_b"] = _home
+        st.session_state["pred_home"] = _home
+    st.rerun()
+
 # ── Sport selector ────────────────────────────────────────────────────────────
 st.sidebar.markdown("### ⚡ Select Sport")
-sport = st.sidebar.radio("Sport", ["🏀 NBA", "⚾ MLB"], horizontal=True, label_visibility="collapsed")
+sport = st.sidebar.radio(
+    "Sport", ["🏀 NBA", "⚾ MLB"], horizontal=True,
+    label_visibility="collapsed", key="sport_select",
+)
 IS_MLB = sport == "⚾ MLB"
 st.sidebar.divider()
 
@@ -280,15 +303,27 @@ if st.sidebar.button("🔄 Update All Teams", use_container_width=True, type="pr
     players_df = load_mlb_players(conn) if IS_MLB else load_players(conn)
 
 # ── Main tabs ─────────────────────────────────────────────────────────────────
-tab_home, tab_games, tab_team, tab_player, tab_pred, tab_top, tab_standings, tab_ai = st.tabs(
-    ["Home", "Game Results", "Team Form", "Player Stats", "Predictions",
-     "Top Performers", "Standings", "AI Scout"]
+# We can't use `st.tabs` because it doesn't support programmatic switching —
+# tapping a today's-matchup card on Home needs to jump to Predictions with the
+# right teams pre-selected (mirrors iOS HomeView). A segmented_control gives
+# us a tab-like UI that we *can* drive from session_state.
+TAB_NAMES = ["Home", "Game Results", "Team Form", "Player Stats", "Predictions",
+             "Top Performers", "Standings", "AI Scout"]
+if "active_tab" not in st.session_state:
+    st.session_state.active_tab = "Home"
+
+st.segmented_control(
+    "Section",
+    TAB_NAMES,
+    key="active_tab",
+    label_visibility="collapsed",
 )
+active_tab = st.session_state.active_tab or "Home"
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Tab 0: Home — Instagram-style feed of games and standout performances
 # ═════════════════════════════════════════════════════════════════════════════
-with tab_home:
+if active_tab == "Home":
     st.markdown("""
     <style>
     .ig-wrap { max-width: 560px; margin: 0 auto; padding-top: 4px; }
@@ -688,7 +723,14 @@ with tab_home:
             short_away = (g.get("away_team") or "").split()[-1] or away_full.split()[-1]
             short_home = (g.get("home_team") or "").split()[-1] or home_full.split()[-1]
             matchup = f"{short_away} @ {short_home}"
+            # Wrap the card in an anchor so a tap on the card itself deep-links
+            # to the Predictions tab with these teams selected. The handler at
+            # the top of the script reads the query params and sets widget state
+            # before any widget renders.
+            from urllib.parse import quote as _q
+            _href = f"?nav_predict=1&away={_q(away_full)}&home={_q(home_full)}"
             st.markdown(f"""
+            <a href="{_href}" target="_self" style="text-decoration:none; color:inherit; display:block;">
             <div class="ig-post">
               <div class="ig-head">
                 <div class="ig-avatar ava-nba">🏀</div>
@@ -705,6 +747,7 @@ with tab_home:
               <div class="ig-actions">🔁 &nbsp; 🔖</div>
               <div class="ig-caption"><b>{away_full}</b> at <b>{home_full}</b> — {g.get("status", "Today")}.</div>
             </div>
+            </a>
             """, unsafe_allow_html=True)
 
         elif t == "nba_perf":
@@ -841,7 +884,7 @@ with tab_home:
 # ═════════════════════════════════════════════════════════════════════════════
 # Tab 1: Game Results
 # ═════════════════════════════════════════════════════════════════════════════
-with tab_games:
+elif active_tab == "Game Results":
     st.subheader("Game Results")
     team_filter = st.selectbox("Select team", ["All"] + ALL_TEAMS, key="games_team")
 
@@ -880,7 +923,7 @@ with tab_games:
 # ═════════════════════════════════════════════════════════════════════════════
 # Tab 2: Team Form
 # ═════════════════════════════════════════════════════════════════════════════
-with tab_team:
+elif active_tab == "Team Form":
     st.subheader("Team Form")
     team_sel = st.selectbox("Select team", ALL_TEAMS, key="form_team")
 
@@ -928,7 +971,7 @@ with tab_team:
 # ═════════════════════════════════════════════════════════════════════════════
 # Tab 3: Player Stats
 # ═════════════════════════════════════════════════════════════════════════════
-with tab_player:
+elif active_tab == "Player Stats":
     st.subheader("Player Stats")
 
     if players_df.empty:
@@ -1151,11 +1194,18 @@ with tab_player:
 # ═════════════════════════════════════════════════════════════════════════════
 # Tab 4: Predictions (win probability + H2H)
 # ═════════════════════════════════════════════════════════════════════════════
-with tab_pred:
+elif active_tab == "Predictions":
     st.subheader("Predictions")
     col1, col2 = st.columns(2)
-    h2h_team_a = col1.selectbox("Team A", ALL_TEAMS, index=0, key="h2h_a")
-    h2h_team_b = col2.selectbox("Team B", ALL_TEAMS, index=1, key="h2h_b")
+    # Seed defaults via session_state (not `index=`) so that card-click
+    # navigation can also set these keys without Streamlit warning that the
+    # widget was created with both a default value and a session-state value.
+    if "h2h_a" not in st.session_state:
+        st.session_state["h2h_a"] = ALL_TEAMS[0]
+    if "h2h_b" not in st.session_state:
+        st.session_state["h2h_b"] = ALL_TEAMS[1] if len(ALL_TEAMS) > 1 else ALL_TEAMS[0]
+    h2h_team_a = col1.selectbox("Team A", ALL_TEAMS, key="h2h_a")
+    h2h_team_b = col2.selectbox("Team B", ALL_TEAMS, key="h2h_b")
 
     if games_df.empty:
         st.info("No game data yet. Use the sidebar to scrape some teams first.")
@@ -2170,7 +2220,7 @@ with tab_pred:
 # ═════════════════════════════════════════════════════════════════════════════
 # Tab 5: Top Performers
 # ═════════════════════════════════════════════════════════════════════════════
-with tab_top:
+elif active_tab == "Top Performers":
     st.subheader("Top Performers")
     top_team = st.selectbox("Select team", ALL_TEAMS, key="top_team")
 
@@ -2208,7 +2258,7 @@ with tab_top:
 # ═════════════════════════════════════════════════════════════════════════════
 # Tab 6: Standings
 # ═════════════════════════════════════════════════════════════════════════════
-with tab_standings:
+elif active_tab == "Standings":
     st.subheader("Standings")
     if games_df.empty:
         st.info("No game data yet. Use the sidebar to scrape some teams first.")
@@ -2227,7 +2277,7 @@ with tab_standings:
 # ═════════════════════════════════════════════════════════════════════════════
 # Tab 7: AI Scout
 # ═════════════════════════════════════════════════════════════════════════════
-with tab_ai:
+elif active_tab == "AI Scout":
     st.subheader("AI Scout")
     sport_label = "MLB" if IS_MLB else "NBA"
     st.caption(f"Ask anything about the {sport_label} teams and players in your database.")
