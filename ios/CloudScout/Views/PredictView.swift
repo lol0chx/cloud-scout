@@ -54,7 +54,16 @@ struct PredictView: View {
                                 .padding(.top, 40)
                         } else if let p = prediction {
                             winProbabilitySection(p)
+
+                            if state.sport == .MLB, p.proj_runs_a != nil {
+                                mlbProjectedScoreSection(p)
+                            }
+
                             factorsSection(p)
+
+                            if state.sport == .MLB, let pillars = p.pillars, !pillars.isEmpty {
+                                mlbPillarsSection(p: p, pillars: pillars)
+                            }
 
                             if state.sport == .NBA, let matchup = todayMatchup {
                                 todayMatchupSection(matchup)
@@ -322,6 +331,115 @@ struct PredictView: View {
     }
 
     private func clamp(_ x: Double) -> Double { min(1.0, max(-1.0, x)) }
+
+    // MARK: - MLB projected score
+
+    @ViewBuilder
+    private func mlbProjectedScoreSection(_ p: Prediction) -> some View {
+        if let runsA = p.proj_runs_a, let runsB = p.proj_runs_b {
+            let colorA = TeamStyle.lookup(p.team_a, league: state.sport.rawValue).color
+            let colorB = TeamStyle.lookup(p.team_b, league: state.sport.rawValue).color
+            let aLeads = runsA >= runsB
+
+            SectionHeader(title: "Projected Score")
+                .padding(.horizontal, 16)
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            TeamBadge(team: p.team_a, league: state.sport.rawValue, size: 22)
+                            Text(TeamStyle.lookup(p.team_a, league: state.sport.rawValue).abbr)
+                                .font(.system(size: 12, weight: .heavy))
+                                .foregroundColor(.csSub)
+                        }
+                        Text(String(format: "%.1f", runsA))
+                            .font(.csMono(36, weight: .heavy))
+                            .foregroundColor(aLeads ? colorA : .csText)
+                            .monospacedDigit()
+                    }
+                    Spacer()
+                    Text("–")
+                        .font(.csMono(28, weight: .bold))
+                        .foregroundColor(.csFaint)
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(TeamStyle.lookup(p.team_b, league: state.sport.rawValue).abbr)
+                                .font(.system(size: 12, weight: .heavy))
+                                .foregroundColor(.csSub)
+                            TeamBadge(team: p.team_b, league: state.sport.rawValue, size: 22)
+                        }
+                        Text(String(format: "%.1f", runsB))
+                            .font(.csMono(36, weight: .heavy))
+                            .foregroundColor(aLeads ? .csText : colorB)
+                            .monospacedDigit()
+                    }
+                }
+
+                Divider().background(Color.csBorder)
+
+                HStack(spacing: 14) {
+                    if let total = p.projected_total {
+                        miniStat(label: "TOTAL", value: String(format: "%.1f", total))
+                    }
+                    if let pyth = p.pythagorean_prob_a {
+                        miniStat(
+                            label: "PYTHAG",
+                            value: "\(Int(pyth.rounded()))% / \(Int((100 - pyth).rounded()))%"
+                        )
+                    }
+                    if let h2hAvg = p.h2h_avg_total {
+                        miniStat(label: "H2H AVG", value: String(format: "%.1f", h2hAvg))
+                    }
+                }
+            }
+            .csCard(radius: 16, padding: EdgeInsets(top: 16, leading: 18, bottom: 16, trailing: 18))
+            .padding(.horizontal, 14)
+        }
+    }
+
+    @ViewBuilder
+    private func miniStat(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.system(size: 9, weight: .heavy))
+                .kerning(0.6)
+                .foregroundColor(.csFaint)
+            Text(value)
+                .font(.csMono(13, weight: .bold))
+                .foregroundColor(.csText)
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - MLB 8-pillar breakdown
+
+    @ViewBuilder
+    private func mlbPillarsSection(p: Prediction, pillars: [PredictionPillar]) -> some View {
+        SectionHeader(title: "8-Pillar Scout Model")
+            .padding(.horizontal, 16)
+
+        let colorA = TeamStyle.lookup(p.team_a, league: state.sport.rawValue).color
+        let colorB = TeamStyle.lookup(p.team_b, league: state.sport.rawValue).color
+
+        VStack(spacing: 8) {
+            ForEach(Array(pillars.enumerated()), id: \.offset) { _, pl in
+                let edge = pl.score_a - pl.score_b   // -1..+1 already since each [0,1]
+                let lean = max(-1.0, min(1.0, edge * 2.0))
+                FactorRow(
+                    label: "\(pl.name)  ·  \(Int((pl.weight * 100).rounded()))%",
+                    valueA: String(format: "%.2f", pl.score_a),
+                    valueB: String(format: "%.2f", pl.score_b),
+                    lean: lean,
+                    colorA: colorA,
+                    colorB: colorB
+                )
+            }
+        }
+        .padding(.horizontal, 14)
+    }
 
     // MARK: - Projected total
 

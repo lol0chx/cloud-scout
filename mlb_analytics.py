@@ -6,7 +6,9 @@ Handles batter and pitcher stat analysis. Team-level analytics
 since the games table structure is identical across sports.
 """
 
+import math
 import unicodedata
+from datetime import datetime
 
 import pandas as pd
 
@@ -327,3 +329,392 @@ def mlb_possible_injured_players(team, players_df, games_df):
     )
 
     return sorted(prev_players - latest_players)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MLB Prediction Model — 8-Pillar composite blended with Pythagorean expectation.
+#
+# Margin is the *direct* projected-runs differential (R_a - R_b), not a logit
+# conversion. Win probability is 70% pillar score + 30% Pythagorean of the
+# projected runs — this anchors the model to actual baseball math rather than
+# letting one wild pillar swing the prediction.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_PILLAR_WEIGHTS = [
+    ("Pitching Matchup",        0.22),
+    ("Offensive Power",         0.18),
+    ("Bullpen Depth",           0.12),
+    ("Defensive Efficiency",    0.10),
+    ("Plate Discipline",        0.08),
+    ("Baserunning & Speed",     0.08),
+    ("Home / Park",             0.12),
+    ("Situational",             0.10),
+]
+
+
+def _clamp01(x):
+    return max(0.0, min(1.0, float(x)))
+
+
+def _team_recent_games(team, games_df, n):
+    tg = games_df[(games_df["home_team"] == team) | (games_df["away_team"] == team)]
+    return tg.sort_values("date", ascending=False).head(n)
+
+
+def _team_recent_ids(team, games_df, n):
+    return _team_recent_games(team, games_df, n)["id"].tolist()
+
+
+def _team_pitchers(team, games_df, players_df, n):
+    if players_df.empty:
+        return players_df
+    gids = _team_recent_ids(team, games_df, n)
+    return players_df[
+        (players_df["role"] == "pitcher")
+        & (players_df["team"] == team)
+        & (players_df["game_id"].isin(gids))
+    ]
+
+
+def _team_batters(team, games_df, players_df, n):
+    if players_df.empty:
+        return players_df
+    gids = _team_recent_ids(team, games_df, n)
+    return players_df[
+        (players_df["role"] == "batter")
+        & (players_df["team"] == team)
+        & (players_df["game_id"].isin(gids))
+    ]
+
+
+def _split_rotation(team_pitchers):
+    """Per game, the pitcher with most innings is the starter; rest are relievers."""
+    if team_pitchers.empty:
+        return team_pitchers, team_pitchers
+    starter_idx = team_pitchers.groupby("game_id")["innings_pitched"].idxmax()
+    starters = team_pitchers.loc[starter_idx]
+    relievers = team_pitchers[~team_pitchers.index.isin(starter_idx)]
+    return starters, relievers
+
+
+def _rest_days(team, games_df):
+    tg = games_df[
+        (games_df["home_team"] == team) | (games_df["away_team"] == team)
+    ].sort_values("date", ascending=False)
+    if len(tg) < 2:
+        return 1
+    try:
+        d1 = datetime.strptime(str(tg.iloc[0]["date"])[:10], "%Y-%m-%d")
+        d2 = datetime.strptime(str(tg.iloc[1]["date"])[:10], "%Y-%m-%d")
+        return max(0, (d1 - d2).days)
+    except (ValueError, TypeError):
+        return 1
+
+
+# ── Pillar scorers ───────────────────────────────────────────────────────────
+
+def _pillar_pitching(team, games_df, players_df, n):
+    pitchers = _team_pitchers(team, games_df, players_df, n)
+    if pitchers.empty:
+        return 0.5
+    starters, _ = _split_rotation(pitchers)
+    ip = starters["innings_pitched"].sum() if not starters.empty else 0
+    if ip <= 0:
+        return 0.5
+    era = _safe_era(starters["earned_runs"].sum(), ip)
+    whip = (starters["walks_allowed"].sum() + starters["hits_allowed"].sum()) / ip
+    era_score = _clamp01((8.0 - era) / 8.0)
+    whip_score = _clamp01((2.5 - whip) / 2.5)
+    return round(era_score * 0.6 + whip_score * 0.4, 4)
+
+
+def _pillar_offense(team, games_df, players_df, n):
+    batters = _team_batters(team, games_df, players_df, n)
+    if batters.empty:
+        return 0.5
+    ab = batters["at_bats"].sum()
+    hits = batters["hits"].sum()
+    hr = batters["home_runs"].sum()
+    rbi = batters["rbi"].sum()
+    g = max(len(_team_recent_ids(team, games_df, n)), 1)
+    avg = hits / ab if ab > 0 else 0.0
+    avg_s = _clamp01((avg - 0.200) / 0.100)
+    hr_s = _clamp01((hr / g - 0.5) / 1.5)
+    rbi_s = _clamp01((rbi / g - 3.0) / 5.0)
+    return round(avg_s * 0.40 + hr_s * 0.35 + rbi_s * 0.25, 4)
+
+
+def _pillar_bullpen(team, games_df, players_df, n):
+    pitchers = _team_pitchers(team, games_df, players_df, n)
+    if pitchers.empty:
+        return 0.5
+    _, relievers = _split_rotation(pitchers)
+    if relievers.empty:
+        return 0.5
+    ip = relievers["innings_pitched"].sum()
+    if ip <= 0:
+        return 0.5
+    era = _safe_era(relievers["earned_runs"].sum(), ip)
+    return round(_clamp01((8.0 - era) / 8.0), 4)
+
+
+def _pillar_defense(team, games_df, n):
+    tg = _team_recent_games(team, games_df, n)
+    if tg.empty:
+        return 0.5
+    conceded = tg.apply(
+        lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1
+    )
+    return round(_clamp01((8.0 - conceded.mean()) / 6.0), 4)
+
+
+def _pillar_plate_discipline(team, games_df, players_df, n):
+    batters = _team_batters(team, games_df, players_df, n)
+    pitchers = _team_pitchers(team, games_df, players_df, n)
+    bb_drawn = batters["walks"].sum() if not batters.empty else 0
+    ab = batters["at_bats"].sum() if not batters.empty else 1
+    ip = pitchers["innings_pitched"].sum() if not pitchers.empty else 1
+    bb_allowed = pitchers["walks_allowed"].sum() if not pitchers.empty else 0
+    drawn_rate = bb_drawn / max(ab, 1)
+    allowed_rate = bb_allowed / max(ip, 1)
+    drawn_s = _clamp01((drawn_rate - 0.05) / 0.10)
+    allowed_s = _clamp01((2.5 - allowed_rate) / 2.0)
+    return round(drawn_s * 0.5 + allowed_s * 0.5, 4)
+
+
+def _pillar_baserunning(team, games_df, players_df, n):
+    batters = _team_batters(team, games_df, players_df, n)
+    if batters.empty:
+        return 0.5
+    hits = batters["hits"].sum()
+    runs = batters["runs"].sum()
+    if hits == 0:
+        return 0.5
+    return round(_clamp01((runs / hits - 0.30) / 0.40), 4)
+
+
+def _pillar_home_park(team, games_df, n, is_home):
+    tg = _team_recent_games(team, games_df, n)
+    if tg.empty:
+        return 0.5
+    if is_home:
+        hg = tg[tg["home_team"] == team]
+        if not hg.empty:
+            return float((hg["home_score"] > hg["away_score"]).mean())
+    else:
+        ag = tg[tg["away_team"] == team]
+        if not ag.empty:
+            return float((ag["away_score"] > ag["home_score"]).mean())
+    # Fallback to overall win%
+    scored = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
+    conceded = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
+    return float((scored.values > conceded.values).mean())
+
+
+def _pillar_situational(team, games_df, n):
+    rest = _rest_days(team, games_df)
+    rest_s = 0.65 if rest >= 2 else (0.50 if rest == 1 else 0.30)
+    tg = _team_recent_games(team, games_df, 5)
+    if tg.empty:
+        form_s = 0.5
+    else:
+        scored = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
+        conceded = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
+        form_s = float((scored.values > conceded.values).mean())
+    return round(rest_s * 0.40 + form_s * 0.60, 4)
+
+
+# ── Run projection (offense vs opponent pitching) ────────────────────────────
+
+def _avg_runs_scored(team, games_df, n, default=4.5):
+    tg = _team_recent_games(team, games_df, n)
+    if tg.empty:
+        return default
+    scored = tg.apply(
+        lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1
+    )
+    return float(scored.mean())
+
+
+def _sp_suppression(opp_team, games_df, players_df, n):
+    """Opp starter ERA → scoring multiplier centered on league-avg 4.50.
+    Each run of ERA above/below shifts run projection by ±7.5%, clamped to ±25%."""
+    pitchers = _team_pitchers(opp_team, games_df, players_df, n)
+    if pitchers.empty:
+        return 1.0
+    starters, _ = _split_rotation(pitchers)
+    ip = starters["innings_pitched"].sum() if not starters.empty else 0
+    if ip <= 0:
+        return 1.0
+    era = _safe_era(starters["earned_runs"].sum(), ip)
+    return max(0.75, min(1.25, 1.0 + (era - 4.50) * 0.075))
+
+
+def _bullpen_suppression(opp_team, games_df, players_df, n):
+    """Opp reliever ERA → late-inning multiplier. Smaller range than SP."""
+    pitchers = _team_pitchers(opp_team, games_df, players_df, n)
+    if pitchers.empty:
+        return 1.0
+    _, relievers = _split_rotation(pitchers)
+    if relievers.empty:
+        return 1.0
+    ip = relievers["innings_pitched"].sum()
+    if ip <= 0:
+        return 1.0
+    era = _safe_era(relievers["earned_runs"].sum(), ip)
+    return max(0.88, min(1.10, 1.0 + (era - 4.50) * 0.040))
+
+
+def _obp_factor(team, games_df, players_df, n):
+    """OBP relative to league avg 0.320, ±10% multiplier."""
+    batters = _team_batters(team, games_df, players_df, n)
+    if batters.empty:
+        return 1.0
+    ab = batters["at_bats"].sum()
+    hits = batters["hits"].sum()
+    bb = batters["walks"].sum()
+    obp = (hits + bb) / max(ab + bb, 1)
+    return max(0.90, min(1.10, 1.0 + (obp - 0.320) * 1.0))
+
+
+def _hr_bonus(team, games_df, players_df, n):
+    """Extra runs from HR/G over league avg of 1.0; each HR/G above adds 0.25 runs."""
+    batters = _team_batters(team, games_df, players_df, n)
+    if batters.empty:
+        return 0.0
+    g = max(len(_team_recent_ids(team, games_df, n)), 1)
+    return max(0.0, (batters["home_runs"].sum() / g - 1.0) * 0.25)
+
+
+def _h2h_avg_total(team_a, team_b, games_df, n=20):
+    h2h = games_df[
+        ((games_df["home_team"] == team_a) & (games_df["away_team"] == team_b))
+        | ((games_df["home_team"] == team_b) & (games_df["away_team"] == team_a))
+    ].sort_values("date", ascending=False).head(n)
+    if h2h.empty:
+        return None
+    return float((h2h["home_score"] + h2h["away_score"]).mean())
+
+
+def _project_runs(team_a, team_b, games_df, players_df, home_team, n):
+    is_a_home = (home_team == team_a)
+    is_b_home = (home_team == team_b)
+    park_a = 1.02 if is_a_home else (0.98 if is_b_home else 1.0)
+    park_b = 1.02 if is_b_home else (0.98 if is_a_home else 1.0)
+
+    def _rest_mult(team):
+        r = _rest_days(team, games_df)
+        return 1.03 if r >= 2 else (1.0 if r == 1 else 0.97)
+
+    a_proj = (
+        _avg_runs_scored(team_a, games_df, n)
+        * _sp_suppression(team_b, games_df, players_df, n)
+        * _bullpen_suppression(team_b, games_df, players_df, n)
+        * _obp_factor(team_a, games_df, players_df, n)
+        * _rest_mult(team_a)
+        * park_a
+    ) + _hr_bonus(team_a, games_df, players_df, n)
+
+    b_proj = (
+        _avg_runs_scored(team_b, games_df, n)
+        * _sp_suppression(team_a, games_df, players_df, n)
+        * _bullpen_suppression(team_a, games_df, players_df, n)
+        * _obp_factor(team_b, games_df, players_df, n)
+        * _rest_mult(team_b)
+        * park_b
+    ) + _hr_bonus(team_b, games_df, players_df, n)
+
+    formula_total = a_proj + b_proj
+    h2h = _h2h_avg_total(team_a, team_b, games_df)
+    if h2h is not None and formula_total > 0:
+        scale = (formula_total * 0.80 + h2h * 0.20) / formula_total
+        a_proj *= scale
+        b_proj *= scale
+
+    return a_proj, b_proj, h2h
+
+
+def _pythagorean(runs_for, runs_against, exp=1.83):
+    """Bill James' Pythagorean expectation. exp=1.83 is the modern best-fit for MLB."""
+    rf = max(runs_for, 0.1) ** exp
+    ra = max(runs_against, 0.1) ** exp
+    return rf / (rf + ra)
+
+
+def mlb_win_probability(team_a, team_b, games_df, players_df, home_team=None, n=20):
+    """
+    8-Pillar MLB prediction blended with Pythagorean expectation.
+
+    Returns a dict with:
+      prob_a, prob_b: win probabilities (0-100, sum to 100)
+      margin: signed projected run differential (proj_a - proj_b)
+      proj_runs_a, proj_runs_b: projected runs for each team
+      projected_total: blended over/under run total
+      pythagorean_prob_a: pure Pythagorean win prob (sanity check)
+      pillars: list of {name, weight, score_a, score_b} for breakdown UI
+      h2h_avg_total: historical H2H avg combined runs (or None)
+    """
+    if games_df is None or games_df.empty:
+        return {
+            "prob_a": 50.0, "prob_b": 50.0, "margin": 0.0,
+            "proj_runs_a": 4.5, "proj_runs_b": 4.5,
+            "projected_total": 9.0, "pythagorean_prob_a": 0.5,
+            "pillars": [], "h2h_avg_total": None,
+        }
+    if players_df is None:
+        players_df = pd.DataFrame()
+
+    is_a_home = (home_team == team_a)
+    is_b_home = (home_team == team_b)
+
+    # ── 8-Pillar composite ───────────────────────────────────────────────
+    pillar_scores = [
+        ("Pitching Matchup",     _pillar_pitching(team_a, games_df, players_df, n),
+                                  _pillar_pitching(team_b, games_df, players_df, n)),
+        ("Offensive Power",      _pillar_offense(team_a, games_df, players_df, n),
+                                  _pillar_offense(team_b, games_df, players_df, n)),
+        ("Bullpen Depth",        _pillar_bullpen(team_a, games_df, players_df, n),
+                                  _pillar_bullpen(team_b, games_df, players_df, n)),
+        ("Defensive Efficiency", _pillar_defense(team_a, games_df, n),
+                                  _pillar_defense(team_b, games_df, n)),
+        ("Plate Discipline",     _pillar_plate_discipline(team_a, games_df, players_df, n),
+                                  _pillar_plate_discipline(team_b, games_df, players_df, n)),
+        ("Baserunning & Speed",  _pillar_baserunning(team_a, games_df, players_df, n),
+                                  _pillar_baserunning(team_b, games_df, players_df, n)),
+        ("Home / Park",          _pillar_home_park(team_a, games_df, n, is_a_home),
+                                  _pillar_home_park(team_b, games_df, n, is_b_home)),
+        ("Situational",          _pillar_situational(team_a, games_df, n),
+                                  _pillar_situational(team_b, games_df, n)),
+    ]
+    pillars = [
+        {"name": name, "weight": w, "score_a": round(sa, 4), "score_b": round(sb, 4)}
+        for (name, w), (_, sa, sb) in zip(_PILLAR_WEIGHTS, pillar_scores)
+    ]
+    score_a = sum(p["weight"] * p["score_a"] for p in pillars)
+    score_b = sum(p["weight"] * p["score_b"] for p in pillars)
+    total = score_a + score_b
+    pillar_prob_a = score_a / total if total > 0 else 0.5
+
+    # ── Run projection + Pythagorean ─────────────────────────────────────
+    proj_a, proj_b, h2h = _project_runs(team_a, team_b, games_df, players_df, home_team, n)
+    pyth_a = _pythagorean(proj_a, proj_b)
+
+    # ── Blend: 70% pillar, 30% Pythagorean ───────────────────────────────
+    final_a = 0.70 * pillar_prob_a + 0.30 * pyth_a
+    prob_a = round(final_a * 100, 1)
+    prob_b = round(100 - prob_a, 1)
+
+    # ── Margin = direct projected run differential ───────────────────────
+    margin = round(proj_a - proj_b, 1)
+
+    return {
+        "prob_a": prob_a,
+        "prob_b": prob_b,
+        "margin": margin,
+        "proj_runs_a": round(proj_a, 2),
+        "proj_runs_b": round(proj_b, 2),
+        "projected_total": round(proj_a + proj_b, 1),
+        "pythagorean_prob_a": round(pyth_a * 100, 1),
+        "pillars": pillars,
+        "h2h_avg_total": round(h2h, 1) if h2h is not None else None,
+    }

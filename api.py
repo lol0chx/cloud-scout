@@ -37,6 +37,7 @@ from mlb_analytics import (
     mlb_pitcher_avg,
     mlb_top_batters,
     mlb_top_pitchers,
+    mlb_win_probability,
 )
 from mlb_scraper import DEFAULT_SEASON as MLB_DEFAULT_SEASON
 from mlb_scraper import get_all_mlb_teams, scrape_mlb_team
@@ -263,12 +264,11 @@ def get_projected_total(team_a: str, team_b: str, home: str = "", n: int = 10):
 def get_prediction(team_a: str, team_b: str, league: str = "NBA", home: str = ""):
     conn = _conn()
     try:
-        df = load_games(conn, league=league.upper())
+        league_u = league.upper()
+        df = load_games(conn, league=league_u)
         if df.empty:
             raise HTTPException(404, "No games in database")
         home_team = home if home in [team_a, team_b] else None
-        _logit_scale = 3.5 if league.upper() == "MLB" else 6.0
-        prob_a, prob_b, margin = win_probability(team_a, team_b, df, home_team=home_team, pts_per_logit=_logit_scale)
 
         def _record(team):
             tg = df[(df["home_team"] == team) | (df["away_team"] == team)]
@@ -281,13 +281,32 @@ def get_prediction(team_a: str, team_b: str, league: str = "NBA", home: str = ""
 
         sc_a, st_a = win_streak(team_a, df)
         sc_b, st_b = win_streak(team_b, df)
-        return {
+        base = {
             "team_a": team_a, "team_b": team_b,
-            "prob_a": prob_a, "prob_b": prob_b, "margin": margin,
             "team_a_record": _record(team_a), "team_b_record": _record(team_b),
             "team_a_streak": {"count": sc_a, "type": st_a},
             "team_b_streak": {"count": sc_b, "type": st_b},
         }
+
+        if league_u == "MLB":
+            players_df = load_mlb_players(conn)
+            mlb = mlb_win_probability(team_a, team_b, df, players_df, home_team=home_team, n=20)
+            base.update({
+                "prob_a": mlb["prob_a"],
+                "prob_b": mlb["prob_b"],
+                "margin": mlb["margin"],
+                "proj_runs_a": mlb["proj_runs_a"],
+                "proj_runs_b": mlb["proj_runs_b"],
+                "projected_total": mlb["projected_total"],
+                "pythagorean_prob_a": mlb["pythagorean_prob_a"],
+                "pillars": mlb["pillars"],
+                "h2h_avg_total": mlb["h2h_avg_total"],
+            })
+        else:
+            prob_a, prob_b, margin = win_probability(team_a, team_b, df, home_team=home_team, pts_per_logit=6.0)
+            base.update({"prob_a": prob_a, "prob_b": prob_b, "margin": margin})
+
+        return base
     finally:
         conn.close()
 

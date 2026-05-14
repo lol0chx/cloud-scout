@@ -70,6 +70,20 @@ struct Prediction: Codable {
     let team_b_record: TeamRecord
     let team_a_streak: TeamStreak
     let team_b_streak: TeamStreak
+    // MLB-only — present when league=MLB, nil for NBA.
+    let proj_runs_a: Double?
+    let proj_runs_b: Double?
+    let projected_total: Double?
+    let pythagorean_prob_a: Double?
+    let pillars: [PredictionPillar]?
+    let h2h_avg_total: Double?
+}
+
+struct PredictionPillar: Codable {
+    let name: String
+    let weight: Double
+    let score_a: Double
+    let score_b: Double
 }
 
 struct TeamRecord: Codable {
