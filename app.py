@@ -2263,16 +2263,27 @@ elif active_tab == "Standings":
     if games_df.empty:
         st.info("No game data yet. Use the sidebar to scrape some teams first.")
     else:
-        standings_df = season_standings(games_df)
-        net_col = "Net Rtg" if not IS_MLB else "Net Rtg"  # "Run Diff" is same column
+        seasons = sorted(
+            [s for s in games_df["season"].dropna().unique() if s],
+            reverse=True,
+        )
+        season_sel = st.selectbox(
+            "Season", seasons, index=0, key=f"standings_season_{'mlb' if IS_MLB else 'nba'}"
+        )
+        season_games = games_df[games_df["season"] == season_sel]
 
-        def color_net(val):
-            color = "#2ea44f" if val > 0 else ("#cf222e" if val < 0 else "")
-            return f"color: {color}; font-weight: bold" if color else ""
+        if season_games.empty:
+            st.info(f"No games for season {season_sel}.")
+        else:
+            standings_df = season_standings(season_games)
 
-        styled = standings_df.style.applymap(color_net, subset=["Net Rtg"])
-        table_height = (len(standings_df) + 1) * 35 + 3
-        st.dataframe(styled, use_container_width=True, hide_index=True, height=table_height)
+            def color_net(val):
+                color = "#2ea44f" if val > 0 else ("#cf222e" if val < 0 else "")
+                return f"color: {color}; font-weight: bold" if color else ""
+
+            styled = standings_df.style.applymap(color_net, subset=["Net Rtg"])
+            table_height = (len(standings_df) + 1) * 35 + 3
+            st.dataframe(styled, use_container_width=True, hide_index=True, height=table_height)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Tab 7: AI Scout

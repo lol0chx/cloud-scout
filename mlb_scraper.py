@@ -17,7 +17,7 @@ from database import init_db, game_exists, insert_game, insert_mlb_players
 
 LEAGUE = "MLB"
 REQUEST_DELAY = 0.5  # seconds between API calls
-DEFAULT_SEASON = 2025  # last completed full MLB season
+DEFAULT_SEASON = 2026  # current MLB season
 
 
 def get_all_mlb_teams():
