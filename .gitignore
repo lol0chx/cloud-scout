@@ -1,10 +1,16 @@
 .DS_Store
 .env
+.env.local
+.env.*.local
 venv/
 __pycache__/
 *.pyc
 *.db
 .idea/
+
+# Fly.io local build cache
+.fly/
+fly.log
 
 # Mobile (React Native / Expo)
 mobile/node_modules/
