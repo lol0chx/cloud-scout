@@ -1,0 +1,29 @@
+# Keep the image lean. Local-only artifacts that have no business in prod.
+.git
+.gitignore
+.idea
+.vscode
+.DS_Store
+.claude
+.env
+.env.*
+
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Local SQLite DB — production uses Postgres via DATABASE_URL.
+cloudscout.db
+*.db
+*.sqlite
+*.sqlite3
+
+# Mobile / iOS / Streamlit assets are not needed by the FastAPI container.
+mobile/
+ios/
+app.py            # Streamlit dashboard is deployed separately (Streamlit Cloud).
+
+# Docs
+*.md
+COMMANDS.txt

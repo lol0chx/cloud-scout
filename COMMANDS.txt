@@ -16,6 +16,12 @@ FIRST TIME SETUP (run once)
      ngrok config add-authtoken YOUR_NGROK_TOKEN
      export ANTHROPIC_API_KEY=sk-ant-...         # only for AI Scout chat features
 
+  Database — local SQLite by default, Postgres in production:
+     # Local dev: no setup needed. database.py auto-uses sqlite:///cloudscout.db.
+     # Production: set DATABASE_URL to your Supabase pooler connection string.
+     cp .env.example .env                        # then edit .env with real values
+     # See README.md "Production deployment" for the full Supabase + Fly.io guide.
+
 
 ================================================================
 OPTION 1 — STREAMLIT WEB APP ONLY (easiest, no phone/backend)
@@ -201,3 +207,32 @@ Notes:
   - Use --scrape on the first run to populate the database
   - Data is saved locally in cloudscout.db so you only need to scrape once
   - Add --scrape to any command to fetch fresh data before analysis
+
+
+================================================================
+PRODUCTION DEPLOY  (Supabase Postgres + Fly.io FastAPI)
+================================================================
+  Full step-by-step guide in README.md. Quick reference:
+
+  One-time — Supabase Postgres:
+     # 1. Create a project at https://supabase.com
+     # 2. Project Settings → Database → Connection pooling (port 6543)
+     #    Copy the connection string and put it in .env as DATABASE_URL.
+     export $(grep -v '^#' .env | xargs)
+     venv/bin/python -c "from database import init_db; init_db().close()"
+     venv/bin/python tools/migrate_sqlite_to_postgres.py --truncate
+
+  One-time — Fly.io FastAPI:
+     brew install flyctl
+     fly auth login
+     fly launch --no-deploy
+     fly secrets set DATABASE_URL="$DATABASE_URL" \
+                     ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+
+  Every deploy:
+     fly deploy
+     fly logs              # tail logs in another terminal
+
+  Streamlit dashboard:
+     Push to GitHub → https://share.streamlit.io → point at app.py
+     → add DATABASE_URL (and ANTHROPIC_API_KEY) under Settings → Secrets.

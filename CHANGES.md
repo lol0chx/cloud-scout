@@ -1,5 +1,54 @@
 # CloudScout — What Was Added
 
+## 2026-05-14 — Postgres + Fly.io migration
+
+### `database.py` rewritten on SQLAlchemy 2.0 Core
+- Driver is now selected by the `DATABASE_URL` env var: Postgres
+  (Supabase in production) when set, `sqlite:///cloudscout.db` otherwise
+  for backward-compat local dev.
+- New `Database` wrapper exposes `.engine` + `.close()` so existing
+  callers in `api.py`, `app.py`, `main.py`, `scraper.py`, `mlb_scraper.py`
+  keep working unchanged.
+- Inserts are dialect-aware: `INSERT OR IGNORE` on SQLite vs
+  `INSERT … ON CONFLICT DO NOTHING` on Postgres; upserts use
+  `INSERT OR REPLACE` vs `ON CONFLICT (..) DO UPDATE SET …`.
+- Schema is recreated idempotently via `CREATE TABLE IF NOT EXISTS` with
+  `SERIAL` / `INTEGER PRIMARY KEY AUTOINCREMENT` chosen at runtime.
+
+### `tools/migrate_sqlite_to_postgres.py`
+One-shot data move: reads every row of the local `cloudscout.db` and
+copies it into the Postgres target identified by `DATABASE_URL`. Supports
+`--truncate` for re-runs and `--chunksize` for memory tuning.
+
+### Fly.io deployment
+- `Dockerfile` builds a slim Python 3.12 image running
+  `uvicorn api:app` on `$PORT`.
+- `fly.toml` configures `min_machines_running = 1` so the iOS app
+  doesn't see cold-start lag, plus a `/health` HTTP check.
+- `.dockerignore` keeps the image free of local DB files, the Streamlit
+  app, iOS sources, and node_modules.
+
+### Docs
+- New top-level `README.md` covers architecture, env vars, local setup,
+  Supabase + Fly.io deploy steps, and where each subsystem lives.
+- `.env.example` template added.
+- `requirements.txt` gained `SQLAlchemy>=2.0`, `psycopg2-binary`,
+  `python-dotenv`.
+
+## 2026-05-13 — MLB prediction overhaul
+
+- Unified the 8-Pillar MLB model in `mlb_analytics.mlb_win_probability()`
+  so both `app.py` (Streamlit) and `api.py` (FastAPI + iOS) call the same
+  formula.
+- Win prob is now `70 % * pillar composite + 30 % * Pythagorean
+  expectation` computed on the projected runs.
+- Margin is the direct projected-run differential rather than a logit
+  conversion.
+- iOS `PredictView` gained a Projected Score card and an 8-Pillar Scout
+  Model breakdown for MLB matchups.
+
+---
+
 ## analytics.py — New Functions
 
 ### `win_streak(team, df)`
