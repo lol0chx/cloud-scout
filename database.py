@@ -1,30 +1,106 @@
 """
-database.py — SQLite database setup and helper functions for CloudScout.
+database.py — Database layer for CloudScout.
 
-Handles creating the database, tables, and all CRUD operations
-for games and player statistics. Uses cloudscout.db as the default
-database file.
+Backed by SQLAlchemy 2.0 so the same code talks to either Postgres
+(production, e.g. Supabase) or SQLite (local development fallback).
+
+Driver selection:
+    1. DATABASE_URL env var, if set, wins (typically Postgres in prod).
+    2. Otherwise falls back to sqlite:///cloudscout.db so local dev
+       continues to work without any configuration.
+
+The public surface intentionally mirrors the original sqlite3 layer:
+each top-level function takes a `db` (Database) as its first argument,
+which the rest of the codebase obtains via `init_db()`.
 """
 
-import sqlite3
+import os
+from typing import Optional
+
 import pandas as pd
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 
+# Load .env at import time so every entry point (api.py, app.py, main.py,
+# scraper.py, scheduler.py) picks up DATABASE_URL / ANTHROPIC_API_KEY without
+# each having to call load_dotenv() itself. No-ops when python-dotenv isn't
+# installed or when no .env file is present.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-def init_db(db_path="cloudscout.db"):
+# ── Connection wrapper ────────────────────────────────────────────────────────
+
+class Database:
+    """Thin wrapper around a SQLAlchemy Engine.
+
+    Mirrors the small slice of sqlite3.Connection's API the codebase used to
+    rely on (`.close()`, used as a context manager), so existing callers
+    don't need to change.
     """
-    Create the SQLite database and both tables if they don't already exist.
-    Returns an open connection to the database.
 
-    Tables created:
-        - games: stores completed game results
-        - players: stores individual player box score stats
+    def __init__(self, url: str):
+        self.url = url
+        # pool_pre_ping handles Supabase / managed-Postgres idle disconnects;
+        # pool_recycle keeps a long-lived API process from holding stale conns.
+        connect_args = {}
+        if url.startswith("sqlite"):
+            # Allow the same SQLite connection to be used across threads
+            # (FastAPI/uvicorn workers, Streamlit reruns, scheduler.py).
+            connect_args["check_same_thread"] = False
+        self.engine: Engine = create_engine(
+            url,
+            pool_pre_ping=True,
+            pool_recycle=300,
+            future=True,
+            connect_args=connect_args,
+        )
+
+    @property
+    def is_postgres(self) -> bool:
+        return self.engine.dialect.name == "postgresql"
+
+    def close(self) -> None:
+        self.engine.dispose()
+
+    def __enter__(self) -> "Database":
+        return self
+
+    def __exit__(self, *_) -> None:
+        self.close()
+
+
+# ── Init / schema ─────────────────────────────────────────────────────────────
+
+def init_db(db_path: Optional[str] = None) -> Database:
+    """Open (and lazily create) the CloudScout database.
+
+    Returns a `Database` whose engine targets DATABASE_URL when set,
+    or sqlite:///cloudscout.db otherwise. Tables are created lazily
+    via CREATE TABLE IF NOT EXISTS so this is safe to call repeatedly.
     """
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    url = os.environ.get("DATABASE_URL") or _legacy_sqlite_url(db_path)
+    # Heroku-style postgres:// → SQLAlchemy expects postgresql://
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    db = Database(url)
+    _ensure_schema(db)
+    return db
 
-    # Create the games table — uses the API game ID as the primary key
-    # so we can easily check for duplicates before inserting
-    cursor.execute("""
+
+def _legacy_sqlite_url(db_path: Optional[str]) -> str:
+    return f"sqlite:///{db_path or 'cloudscout.db'}"
+
+
+def _ensure_schema(db: Database) -> None:
+    """Idempotent CREATE TABLE IF NOT EXISTS for all CloudScout tables."""
+    auto_pk = "SERIAL PRIMARY KEY" if db.is_postgres else "INTEGER PRIMARY KEY AUTOINCREMENT"
+
+    stmts = [
+        # ── games: API-supplied integer ID is the PK (not autoincrement)
+        """
         CREATE TABLE IF NOT EXISTS games (
             id INTEGER PRIMARY KEY,
             date TEXT NOT NULL,
@@ -35,13 +111,11 @@ def init_db(db_path="cloudscout.db"):
             league TEXT NOT NULL DEFAULT 'NBA',
             season TEXT NOT NULL
         )
-    """)
-
-    # Create the players table — autoincrement PK with a unique constraint
-    # on (name, game_id) to prevent duplicate player entries per game
-    cursor.execute("""
+        """,
+        # ── NBA player box scores
+        f"""
         CREATE TABLE IF NOT EXISTS players (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {auto_pk},
             name TEXT NOT NULL,
             team TEXT NOT NULL,
             date TEXT NOT NULL,
@@ -65,28 +139,13 @@ def init_db(db_path="cloudscout.db"):
             free_throws_attempted INTEGER,
             free_throw_pct REAL,
             plus_minus INTEGER,
-            FOREIGN KEY (game_id) REFERENCES games(id),
             UNIQUE (name, game_id)
         )
-    """)
-
-    # Add new columns to existing players table if upgrading from older schema
-    _add_column_if_missing(cursor, "players", "off_rebounds", "INTEGER")
-    _add_column_if_missing(cursor, "players", "def_rebounds", "INTEGER")
-    _add_column_if_missing(cursor, "players", "field_goals_made", "INTEGER")
-    _add_column_if_missing(cursor, "players", "field_goals_attempted", "INTEGER")
-    _add_column_if_missing(cursor, "players", "three_pointers_made", "INTEGER")
-    _add_column_if_missing(cursor, "players", "three_pointers_attempted", "INTEGER")
-    _add_column_if_missing(cursor, "players", "free_throws_made", "INTEGER")
-    _add_column_if_missing(cursor, "players", "free_throws_attempted", "INTEGER")
-    _add_column_if_missing(cursor, "players", "free_throw_pct", "REAL")
-    _add_column_if_missing(cursor, "players", "plus_minus", "INTEGER")
-
-    # MLB players table — separate from NBA players because stats differ
-    # fundamentally between batters and pitchers. role = 'batter' or 'pitcher'.
-    cursor.execute("""
+        """,
+        # ── MLB batters + pitchers (role discriminates)
+        f"""
         CREATE TABLE IF NOT EXISTS mlb_players (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {auto_pk},
             name TEXT NOT NULL,
             team TEXT NOT NULL,
             date TEXT NOT NULL,
@@ -105,15 +164,13 @@ def init_db(db_path="cloudscout.db"):
             walks_allowed INTEGER,
             strikeouts_pitched INTEGER,
             home_runs_allowed INTEGER,
-            FOREIGN KEY (game_id) REFERENCES games(id),
             UNIQUE (name, game_id, role)
         )
-    """)
-
-    # Injury reports — stores official injury data from ESPN
-    cursor.execute("""
+        """,
+        # ── Injury reports (scraped from ESPN)
+        f"""
         CREATE TABLE IF NOT EXISTS injuries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {auto_pk},
             player_name TEXT NOT NULL,
             team TEXT NOT NULL,
             status TEXT NOT NULL,
@@ -128,12 +185,11 @@ def init_db(db_path="cloudscout.db"):
             league TEXT NOT NULL DEFAULT 'NBA',
             UNIQUE (player_name, team, league)
         )
-    """)
-
-    # Referee season stats — scraped from NBAStuffer
-    cursor.execute("""
+        """,
+        # ── Referee season stats (NBAStuffer)
+        f"""
         CREATE TABLE IF NOT EXISTS referee_stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {auto_pk},
             name TEXT NOT NULL,
             games_officiated INTEGER,
             total_ppg REAL,
@@ -142,342 +198,282 @@ def init_db(db_path="cloudscout.db"):
             last_updated TEXT NOT NULL,
             UNIQUE (name)
         )
-    """)
-
-    # Referee game assignments — scraped from official.nba.com
-    cursor.execute("""
+        """,
+        # ── Referee per-game assignments (official.nba.com)
+        f"""
         CREATE TABLE IF NOT EXISTS referee_assignments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {auto_pk},
             game_matchup TEXT NOT NULL,
             referee_name TEXT NOT NULL,
             role TEXT NOT NULL,
             assignment_date TEXT NOT NULL,
             UNIQUE (game_matchup, referee_name, assignment_date)
         )
-    """)
+        """,
+    ]
 
-    conn.commit()
-    return conn
-
-
-def _add_column_if_missing(cursor, table, column, col_type):
-    """Add a column to a table if it doesn't already exist (for schema migrations)."""
-    cursor.execute(f"PRAGMA table_info({table})")
-    existing = [row[1] for row in cursor.fetchall()]
-    if column not in existing:
-        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+    with db.engine.begin() as conn:
+        for s in stmts:
+            conn.execute(text(s))
 
 
-def game_exists(conn, game_id):
-    """
-    Check if a game with the given API ID already exists in the database.
-    Used by the scraper to skip games we've already stored and conserve
-    our daily API request quota.
+# ── Dialect-aware insert helpers ──────────────────────────────────────────────
 
-    Args:
-        conn: SQLite connection object
-        game_id: the API-provided game ID to check
-
-    Returns:
-        True if the game exists, False otherwise
-    """
-    cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM games WHERE id = ?", (game_id,))
-    return cursor.fetchone() is not None
-
-
-def insert_game(conn, game):
-    """
-    Insert a single game record into the games table.
-    Uses INSERT OR IGNORE so duplicate game IDs are silently skipped.
-
-    Args:
-        conn: SQLite connection object
-        game: dict with keys: id, date, home_team, away_team,
-              home_score, away_score, league, season
-    """
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT OR IGNORE INTO games
-            (id, date, home_team, away_team, home_score, away_score, league, season)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        game["id"],
-        game["date"],
-        game["home_team"],
-        game["away_team"],
-        game["home_score"],
-        game["away_score"],
-        game["league"],
-        game["season"],
-    ))
-    conn.commit()
-
-
-def insert_players(conn, players):
-    """
-    Bulk insert player box score records for a game.
-    Uses INSERT OR IGNORE with the (name, game_id) unique constraint
-    to prevent duplicate entries.
-
-    Args:
-        conn: SQLite connection object
-        players: list of dicts, each with keys matching the players
-                 table columns (name, team, date, game_id, points, etc.)
-    """
-    cursor = conn.cursor()
-    cursor.executemany("""
-        INSERT OR IGNORE INTO players
-            (name, team, date, game_id, points, assists, rebounds,
-             off_rebounds, def_rebounds, steals, blocks, turnovers, minutes,
-             field_goals_made, field_goals_attempted, field_goal_pct,
-             three_pointers_made, three_pointers_attempted, three_point_pct,
-             free_throws_made, free_throws_attempted, free_throw_pct, plus_minus)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, [
-        (
-            p["name"], p["team"], p["date"], p["game_id"],
-            p.get("points"), p.get("assists"), p.get("rebounds"),
-            p.get("off_rebounds"), p.get("def_rebounds"),
-            p.get("steals"), p.get("blocks"), p.get("turnovers"),
-            p.get("minutes"),
-            p.get("field_goals_made"), p.get("field_goals_attempted"), p.get("field_goal_pct"),
-            p.get("three_pointers_made"), p.get("three_pointers_attempted"), p.get("three_point_pct"),
-            p.get("free_throws_made"), p.get("free_throws_attempted"), p.get("free_throw_pct"),
-            p.get("plus_minus"),
+def _insert_or_ignore_sql(db: Database, table: str, cols: list[str]) -> str:
+    """SQLite-style INSERT OR IGNORE; on Postgres uses ON CONFLICT DO NOTHING."""
+    col_list = ", ".join(cols)
+    placeholders = ", ".join(f":{c}" for c in cols)
+    if db.is_postgres:
+        return (
+            f"INSERT INTO {table} ({col_list}) VALUES ({placeholders}) "
+            "ON CONFLICT DO NOTHING"
         )
-        for p in players
-    ])
-    conn.commit()
+    return f"INSERT OR IGNORE INTO {table} ({col_list}) VALUES ({placeholders})"
 
 
-def insert_mlb_players(conn, players):
-    """
-    Bulk insert MLB player stats (batters and pitchers) for a game.
-    Uses INSERT OR IGNORE with the (name, game_id, role) unique constraint.
-
-    Args:
-        conn: SQLite connection object
-        players: list of dicts with keys matching the mlb_players table columns
-    """
-    cursor = conn.cursor()
-    cursor.executemany("""
-        INSERT OR IGNORE INTO mlb_players
-            (name, team, date, game_id, role,
-             at_bats, hits, runs, home_runs, rbi, walks, strikeouts,
-             innings_pitched, hits_allowed, earned_runs, walks_allowed,
-             strikeouts_pitched, home_runs_allowed)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, [
-        (
-            p["name"], p["team"], p["date"], p["game_id"], p["role"],
-            p.get("at_bats"), p.get("hits"), p.get("runs"),
-            p.get("home_runs"), p.get("rbi"), p.get("walks"),
-            p.get("strikeouts"),
-            p.get("innings_pitched"), p.get("hits_allowed"),
-            p.get("earned_runs"), p.get("walks_allowed"),
-            p.get("strikeouts_pitched"), p.get("home_runs_allowed"),
+def _upsert_sql(
+    db: Database, table: str, cols: list[str], conflict_cols: list[str]
+) -> str:
+    """SQLite-style INSERT OR REPLACE; on Postgres uses ON CONFLICT (..) DO UPDATE."""
+    col_list = ", ".join(cols)
+    placeholders = ", ".join(f":{c}" for c in cols)
+    if db.is_postgres:
+        cc = ", ".join(conflict_cols)
+        updates = ", ".join(
+            f"{c}=EXCLUDED.{c}" for c in cols if c not in conflict_cols
         )
-        for p in players
-    ])
-    conn.commit()
+        return (
+            f"INSERT INTO {table} ({col_list}) VALUES ({placeholders}) "
+            f"ON CONFLICT ({cc}) DO UPDATE SET {updates}"
+        )
+    return f"INSERT OR REPLACE INTO {table} ({col_list}) VALUES ({placeholders})"
 
 
-def load_mlb_players(conn, player_name=None, team=None, role=None):
-    """
-    Load MLB player statistics from the database into a pandas DataFrame.
-    Optionally filter by player name (partial), team, and/or role ('batter'/'pitcher').
+def _read_sql(db: Database, query: str, params: Optional[dict] = None) -> pd.DataFrame:
+    """Run a SELECT and return a pandas DataFrame. Uses named-bind params (:name)."""
+    return pd.read_sql_query(text(query), db.engine, params=params or {})
 
-    Args:
-        conn: SQLite connection object
-        player_name: optional player name to search for (partial match)
-        team: optional team name to filter by
-        role: optional role to filter by ('batter' or 'pitcher')
 
-    Returns:
-        pandas DataFrame of matching MLB player stat records
-    """
-    query = "SELECT * FROM mlb_players WHERE 1=1"
-    params = []
+# ── Games ─────────────────────────────────────────────────────────────────────
 
-    if player_name:
-        query += " AND name LIKE ?"
-        params.append(f"%{player_name}%")
+def game_exists(db: Database, game_id: int) -> bool:
+    """True if a row in `games` already has the given id."""
+    with db.engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT 1 FROM games WHERE id = :id"), {"id": game_id}
+        ).first()
+    return row is not None
 
+
+_GAME_COLS = [
+    "id", "date", "home_team", "away_team",
+    "home_score", "away_score", "league", "season",
+]
+
+
+def insert_game(db: Database, game: dict) -> None:
+    """Insert one game row; ignores duplicate primary keys."""
+    sql = _insert_or_ignore_sql(db, "games", _GAME_COLS)
+    record = {k: game.get(k) for k in _GAME_COLS}
+    with db.engine.begin() as conn:
+        conn.execute(text(sql), record)
+
+
+def load_games(db: Database, team: Optional[str] = None, league: str = "NBA") -> pd.DataFrame:
+    """Load games (excluding corrupt 0-0 records). Optional filter by team / league."""
+    query = (
+        "SELECT * FROM games WHERE league = :league "
+        "AND NOT (home_score = 0 AND away_score = 0)"
+    )
+    params: dict = {"league": league}
     if team:
-        query += " AND team = ?"
-        params.append(team)
-
-    if role:
-        query += " AND role = ?"
-        params.append(role)
-
+        query += " AND (home_team = :team_home OR away_team = :team_away)"
+        params["team_home"] = team
+        params["team_away"] = team
     query += " ORDER BY date DESC"
-    return pd.read_sql_query(query, conn, params=params)
+    return _read_sql(db, query, params)
 
 
-def load_games(conn, team=None, league="NBA"):
-    """
-    Load games from the database into a pandas DataFrame.
-    Optionally filter by team name (matches either home or away team)
-    and by league. Results are ordered by date descending (most recent first).
-    Excludes corrupt 0-0 records automatically.
+# ── NBA players ───────────────────────────────────────────────────────────────
 
-    Args:
-        conn: SQLite connection object
-        team: optional team name to filter by (matches home_team or away_team)
-        league: league to filter by (default: "NBA")
-
-    Returns:
-        pandas DataFrame of matching game records
-    """
-    # Exclude games where both scores are 0 — these are corrupt/incomplete records
-    query = "SELECT * FROM games WHERE league = ? AND NOT (home_score = 0 AND away_score = 0)"
-    params = [league]
-
-    # Filter for games involving the specified team on either side
-    if team:
-        query += " AND (home_team = ? OR away_team = ?)"
-        params.extend([team, team])
-
-    query += " ORDER BY date DESC"
-    return pd.read_sql_query(query, conn, params=params)
+_PLAYER_COLS = [
+    "name", "team", "date", "game_id",
+    "points", "assists", "rebounds",
+    "off_rebounds", "def_rebounds",
+    "steals", "blocks", "turnovers",
+    "minutes",
+    "field_goals_made", "field_goals_attempted", "field_goal_pct",
+    "three_pointers_made", "three_pointers_attempted", "three_point_pct",
+    "free_throws_made", "free_throws_attempted", "free_throw_pct",
+    "plus_minus",
+]
 
 
-def load_players(conn, player_name=None, team=None):
-    """
-    Load player statistics from the database into a pandas DataFrame.
-    Optionally filter by player name (case-insensitive partial match)
-    and/or team name. Results are ordered by date descending.
+def insert_players(db: Database, players: list[dict]) -> None:
+    """Bulk insert NBA player box scores; ignores duplicates on (name, game_id)."""
+    if not players:
+        return
+    sql = _insert_or_ignore_sql(db, "players", _PLAYER_COLS)
+    records = [{k: p.get(k) for k in _PLAYER_COLS} for p in players]
+    with db.engine.begin() as conn:
+        conn.execute(text(sql), records)
 
-    Args:
-        conn: SQLite connection object
-        player_name: optional player name to search for (partial match)
-        team: optional team name to filter by
 
-    Returns:
-        pandas DataFrame of matching player stat records
-    """
+def load_players(
+    db: Database,
+    player_name: Optional[str] = None,
+    team: Optional[str] = None,
+) -> pd.DataFrame:
+    """Load NBA player rows, optionally filtered by partial name match / team."""
     query = "SELECT * FROM players WHERE 1=1"
-    params = []
-
-    # Case-insensitive partial match on player name so users don't
-    # need to type the exact full name
+    params: dict = {}
     if player_name:
-        query += " AND name LIKE ?"
-        params.append(f"%{player_name}%")
-
+        query += " AND name LIKE :name"
+        params["name"] = f"%{player_name}%"
     if team:
-        query += " AND team = ?"
-        params.append(team)
-
+        query += " AND team = :team"
+        params["team"] = team
     query += " ORDER BY date DESC"
-    return pd.read_sql_query(query, conn, params=params)
+    return _read_sql(db, query, params)
 
 
-def upsert_injuries(conn, injuries):
-    """
-    Insert or replace injury records. Uses UNIQUE(player_name, team, league)
-    so each refresh replaces stale entries for the same player.
+# ── MLB players ───────────────────────────────────────────────────────────────
 
-    Args:
-        conn: SQLite connection object
-        injuries: list of dicts with keys matching the injuries table columns
-    """
-    cursor = conn.cursor()
-    cursor.executemany("""
-        INSERT OR REPLACE INTO injuries
-            (player_name, team, status, injury_type, body_part, detail,
-             side, return_date, short_comment, long_comment, last_updated, league)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, [
-        (
-            i["player_name"], i["team"], i["status"],
-            i.get("injury_type"), i.get("body_part"), i.get("detail"),
-            i.get("side"), i.get("return_date"),
-            i.get("short_comment"), i.get("long_comment"),
-            i["last_updated"], i.get("league", "NBA"),
-        )
-        for i in injuries
-    ])
-    conn.commit()
+_MLB_PLAYER_COLS = [
+    "name", "team", "date", "game_id", "role",
+    "at_bats", "hits", "runs", "home_runs", "rbi", "walks", "strikeouts",
+    "innings_pitched", "hits_allowed", "earned_runs", "walks_allowed",
+    "strikeouts_pitched", "home_runs_allowed",
+]
 
 
-def clear_injuries(conn, league="NBA"):
-    """Remove all injury records for a league before a full refresh."""
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM injuries WHERE league = ?", (league,))
-    conn.commit()
+def insert_mlb_players(db: Database, players: list[dict]) -> None:
+    """Bulk insert MLB player rows; ignores duplicates on (name, game_id, role)."""
+    if not players:
+        return
+    sql = _insert_or_ignore_sql(db, "mlb_players", _MLB_PLAYER_COLS)
+    records = [{k: p.get(k) for k in _MLB_PLAYER_COLS} for p in players]
+    with db.engine.begin() as conn:
+        conn.execute(text(sql), records)
 
 
-def load_injuries(conn, team=None, league="NBA"):
-    """
-    Load injury records from the database into a pandas DataFrame.
-    Optionally filter by team.
-
-    Args:
-        conn: SQLite connection object
-        team: optional team name to filter by
-        league: league to filter by (default: "NBA")
-
-    Returns:
-        pandas DataFrame of injury records
-    """
-    query = "SELECT * FROM injuries WHERE league = ?"
-    params = [league]
+def load_mlb_players(
+    db: Database,
+    player_name: Optional[str] = None,
+    team: Optional[str] = None,
+    role: Optional[str] = None,
+) -> pd.DataFrame:
+    """Load MLB player rows, optionally filtered by partial name / team / role."""
+    query = "SELECT * FROM mlb_players WHERE 1=1"
+    params: dict = {}
+    if player_name:
+        query += " AND name LIKE :name"
+        params["name"] = f"%{player_name}%"
     if team:
-        query += " AND team = ?"
-        params.append(team)
+        query += " AND team = :team"
+        params["team"] = team
+    if role:
+        query += " AND role = :role"
+        params["role"] = role
+    query += " ORDER BY date DESC"
+    return _read_sql(db, query, params)
+
+
+# ── Injuries ──────────────────────────────────────────────────────────────────
+
+_INJURY_COLS = [
+    "player_name", "team", "status", "injury_type", "body_part", "detail",
+    "side", "return_date", "short_comment", "long_comment", "last_updated", "league",
+]
+
+
+def upsert_injuries(db: Database, injuries: list[dict]) -> None:
+    """Insert-or-replace injury rows keyed on (player_name, team, league)."""
+    if not injuries:
+        return
+    sql = _upsert_sql(
+        db, "injuries", _INJURY_COLS,
+        conflict_cols=["player_name", "team", "league"],
+    )
+    records = [
+        {**{k: i.get(k) for k in _INJURY_COLS},
+         "league": i.get("league", "NBA")}
+        for i in injuries
+    ]
+    with db.engine.begin() as conn:
+        conn.execute(text(sql), records)
+
+
+def clear_injuries(db: Database, league: str = "NBA") -> None:
+    """Wipe all injury rows for a league (used before a full refresh)."""
+    with db.engine.begin() as conn:
+        conn.execute(text("DELETE FROM injuries WHERE league = :league"), {"league": league})
+
+
+def load_injuries(db: Database, team: Optional[str] = None, league: str = "NBA") -> pd.DataFrame:
+    query = "SELECT * FROM injuries WHERE league = :league"
+    params: dict = {"league": league}
+    if team:
+        query += " AND team = :team"
+        params["team"] = team
     query += " ORDER BY team, status, player_name"
-    return pd.read_sql_query(query, conn, params=params)
+    return _read_sql(db, query, params)
 
 
-# ── Referee helpers ───────────────────────────────────────────────────────────
+# ── Referees ──────────────────────────────────────────────────────────────────
 
-def upsert_referee_stats(conn, stats):
-    cursor = conn.cursor()
-    cursor.executemany("""
-        INSERT OR REPLACE INTO referee_stats
-            (name, games_officiated, total_ppg, fouls_per_game, home_win_pct, last_updated)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, [
-        (s["name"], s.get("games_officiated"), s.get("total_ppg"),
-         s.get("fouls_per_game"), s.get("home_win_pct"), s["last_updated"])
-        for s in stats
-    ])
-    conn.commit()
+_REFEREE_STATS_COLS = [
+    "name", "games_officiated", "total_ppg",
+    "fouls_per_game", "home_win_pct", "last_updated",
+]
 
 
-def clear_referee_stats(conn):
-    conn.cursor().execute("DELETE FROM referee_stats")
-    conn.commit()
+def upsert_referee_stats(db: Database, stats: list[dict]) -> None:
+    if not stats:
+        return
+    sql = _upsert_sql(db, "referee_stats", _REFEREE_STATS_COLS, conflict_cols=["name"])
+    records = [{k: s.get(k) for k in _REFEREE_STATS_COLS} for s in stats]
+    with db.engine.begin() as conn:
+        conn.execute(text(sql), records)
 
 
-def load_referee_stats(conn):
-    return pd.read_sql_query("SELECT * FROM referee_stats ORDER BY name", conn)
+def clear_referee_stats(db: Database) -> None:
+    with db.engine.begin() as conn:
+        conn.execute(text("DELETE FROM referee_stats"))
 
 
-def upsert_referee_assignments(conn, assignments):
-    cursor = conn.cursor()
-    cursor.executemany("""
-        INSERT OR REPLACE INTO referee_assignments
-            (game_matchup, referee_name, role, assignment_date)
-        VALUES (?, ?, ?, ?)
-    """, [
-        (a["game_matchup"], a["referee_name"], a["role"], a["assignment_date"])
-        for a in assignments
-    ])
-    conn.commit()
+def load_referee_stats(db: Database) -> pd.DataFrame:
+    return _read_sql(db, "SELECT * FROM referee_stats ORDER BY name")
 
 
-def clear_referee_assignments(conn):
-    conn.cursor().execute("DELETE FROM referee_assignments")
-    conn.commit()
+_REFEREE_ASSIGNMENT_COLS = ["game_matchup", "referee_name", "role", "assignment_date"]
 
 
-def load_referee_assignments(conn, date=None):
+def upsert_referee_assignments(db: Database, assignments: list[dict]) -> None:
+    if not assignments:
+        return
+    sql = _upsert_sql(
+        db, "referee_assignments", _REFEREE_ASSIGNMENT_COLS,
+        conflict_cols=["game_matchup", "referee_name", "assignment_date"],
+    )
+    records = [{k: a.get(k) for k in _REFEREE_ASSIGNMENT_COLS} for a in assignments]
+    with db.engine.begin() as conn:
+        conn.execute(text(sql), records)
+
+
+def clear_referee_assignments(db: Database) -> None:
+    with db.engine.begin() as conn:
+        conn.execute(text("DELETE FROM referee_assignments"))
+
+
+def load_referee_assignments(db: Database, date: Optional[str] = None) -> pd.DataFrame:
     if date:
-        return pd.read_sql_query(
-            "SELECT * FROM referee_assignments WHERE assignment_date = ? ORDER BY game_matchup",
-            conn, params=[date])
-    return pd.read_sql_query("SELECT * FROM referee_assignments ORDER BY assignment_date DESC, game_matchup", conn)
+        return _read_sql(
+            db,
+            "SELECT * FROM referee_assignments WHERE assignment_date = :d ORDER BY game_matchup",
+            {"d": date},
+        )
+    return _read_sql(
+        db,
+        "SELECT * FROM referee_assignments ORDER BY assignment_date DESC, game_matchup",
+    )

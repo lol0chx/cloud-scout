@@ -7,3 +7,6 @@ anthropic
 fastapi
 uvicorn[standard]
 beautifulsoup4
+SQLAlchemy>=2.0
+psycopg2-binary
+python-dotenv
