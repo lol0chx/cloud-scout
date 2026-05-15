@@ -1,0 +1,41 @@
+# Fly.io deployment for the CloudScout FastAPI backend.
+#
+# After installing the Fly CLI and running `fly auth login`, deploy with:
+#     fly launch --no-deploy   # one-time: creates the app, picks a region
+#     fly secrets set DATABASE_URL='postgresql://...'   # Supabase pooler URL
+#     fly secrets set ANTHROPIC_API_KEY='sk-ant-...'    # optional, AI Scout chat
+#     fly deploy
+
+app = "cloudscout-api"   # rename after `fly launch` picks a unique app name
+primary_region = "iad"   # change to your nearest region; `fly platform regions`
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  # Keep one machine warm so the first iOS request after idle isn't slow.
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 30
+    hard_limit = 60
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  cpus = 1
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  timeout = "5s"
+  path = "/health"
