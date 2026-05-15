@@ -23,6 +23,10 @@ import os
 import sys
 from pathlib import Path
 
+# Make the repo root importable so `from database import init_db` works
+# regardless of where this script is run from.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import pandas as pd
 from sqlalchemy import create_engine, text
 
