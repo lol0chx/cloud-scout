@@ -58,6 +58,100 @@ def _resolve_mlb_team(team_name):
     return results[0]
 
 
+def _mlb_nickname(full_name):
+    """'Boston Red Sox' -> 'Red Sox'. Handles MLB's two-word nicknames."""
+    two_word = ("Red Sox", "White Sox", "Blue Jays")
+    for nick in two_word:
+        if full_name.endswith(nick):
+            return nick
+    return full_name.split()[-1] if full_name else full_name
+
+
+def fetch_todays_mlb_games():
+    """Today's MLB scoreboard (scheduled, live, final) in the SAME shape as
+    scraper.fetch_todays_games() so the iOS feed renders it like NBA.
+
+    Returns a list of dicts: game_id, home_team, home_team_full,
+    away_team, away_team_full, status, game_status (1=sched,2=live,3=final),
+    league.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    time.sleep(REQUEST_DELAY)
+    try:
+        schedule = statsapi.schedule(start_date=today, end_date=today, sportId=1)
+    except Exception as e:
+        print(f"Failed to fetch today's MLB schedule: {e}")
+        return []
+
+    live_states = ("In Progress", "Warmup", "Manager Challenge", "Delayed")
+    final_states = ("Final", "Game Over", "Completed Early")
+
+    games = []
+    for g in schedule:
+        if g.get("game_type") != "R":          # regular season only, like NBA feed
+            continue
+        status = g.get("status", "")
+        if status in final_states:
+            gs = 3
+        elif status in live_states:
+            gs = 2
+        else:
+            gs = 1
+        home_full = g.get("home_name", "")
+        away_full = g.get("away_name", "")
+        games.append({
+            "game_id": str(g.get("game_id", "")),
+            "home_team": _mlb_nickname(home_full),
+            "home_team_full": home_full,
+            "away_team": _mlb_nickname(away_full),
+            "away_team_full": away_full,
+            "status": status or "Scheduled",
+            "game_status": gs,
+            "league": "MLB",
+        })
+    return games
+
+
+def _parse_wind_mph(wind):
+    """'8 mph, Out To CF' -> 8 ; 'Calm' -> 0 ; '' / None -> None."""
+    if not wind:
+        return None
+    w = str(wind).strip()
+    if w.lower().startswith("calm"):
+        return 0
+    num = ""
+    for ch in w:
+        if ch.isdigit():
+            num += ch
+        elif num:
+            break
+    return int(num) if num else None
+
+
+def _fetch_venue_weather(game_id, schedule_game):
+    """Venue + weather for one game from the MLB Stats API.
+
+    Venue is free from the schedule payload. Weather needs the game feed
+    (one extra call). Always returns the 4 keys; any are None on failure so
+    the scrape never breaks over missing context.
+    """
+    out = {
+        "venue": schedule_game.get("venue_name") or None,
+        "temp_f": None, "wind_mph": None, "condition": None,
+    }
+    time.sleep(REQUEST_DELAY)
+    try:
+        feed = statsapi.get("game", {"gamePk": game_id})
+        wx = feed.get("gameData", {}).get("weather", {}) or {}
+        temp = wx.get("temp")
+        out["temp_f"] = int(temp) if temp not in (None, "") else None
+        out["wind_mph"] = _parse_wind_mph(wx.get("wind"))
+        out["condition"] = wx.get("condition") or None
+    except (KeyError, ValueError, TypeError, AttributeError) as e:
+        print(f"  No weather for game {game_id}: {e}")
+    return out
+
+
 def fetch_mlb_games(team, season=DEFAULT_SEASON, last=15):
     """
     Fetch the last N completed regular-season MLB games for a team.
@@ -119,7 +213,7 @@ def fetch_mlb_games(team, season=DEFAULT_SEASON, last=15):
             cursor.execute("DELETE FROM mlb_players WHERE game_id = ?", (game_id,))
             conn.commit()
 
-        pending.append({
+        rec = {
             "game_id": game_id,
             "date": game["game_date"],          # YYYY-MM-DD
             "home_team": game["home_name"],
@@ -127,7 +221,9 @@ def fetch_mlb_games(team, season=DEFAULT_SEASON, last=15):
             "home_score": int(game.get("home_score", 0)),
             "away_score": int(game.get("away_score", 0)),
             "season": str(season),
-        })
+        }
+        rec.update(_fetch_venue_weather(game_id, game))
+        pending.append(rec)
 
     conn.close()
 
@@ -275,6 +371,10 @@ def scrape_mlb_team(team, season=DEFAULT_SEASON, last=15):
             "away_score": game_info["away_score"],
             "league": LEAGUE,
             "season": game_info["season"],
+            "venue": game_info.get("venue"),
+            "temp_f": game_info.get("temp_f"),
+            "wind_mph": game_info.get("wind_mph"),
+            "condition": game_info.get("condition"),
         }
         insert_game(conn, game_record)
         all_games.append(game_record)

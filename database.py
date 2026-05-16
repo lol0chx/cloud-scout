@@ -87,6 +87,7 @@ def init_db(db_path: Optional[str] = None) -> Database:
         url = "postgresql://" + url[len("postgres://"):]
     db = Database(url)
     _ensure_schema(db)
+    _migrate_schema(db)
     return db
 
 
@@ -217,6 +218,41 @@ def _ensure_schema(db: Database) -> None:
             conn.execute(text(s))
 
 
+# Columns added to `games` after the original schema shipped. CREATE TABLE IF
+# NOT EXISTS will not alter an existing table, so these need a guarded ALTER.
+# All nullable — NBA rows simply leave them NULL.
+_GAME_EXTRA_COLS = [
+    ("venue", "TEXT"),
+    ("temp_f", "INTEGER"),
+    ("wind_mph", "INTEGER"),
+    ("condition", "TEXT"),
+]
+
+
+def _migrate_schema(db: Database) -> None:
+    """Idempotently add later-added nullable columns to existing tables.
+
+    Safe to run on every startup and on both an already-populated SQLite
+    file and a Supabase/Postgres database — never drops or rewrites data.
+    """
+    if db.is_postgres:
+        with db.engine.begin() as conn:
+            for col, typ in _GAME_EXTRA_COLS:
+                conn.execute(
+                    text(f"ALTER TABLE games ADD COLUMN IF NOT EXISTS {col} {typ}")
+                )
+        return
+    # SQLite has no "ADD COLUMN IF NOT EXISTS" — inspect columns first so a
+    # repeat run doesn't raise "duplicate column name".
+    with db.engine.begin() as conn:
+        existing = {
+            row[1] for row in conn.execute(text("PRAGMA table_info(games)")).all()
+        }
+        for col, typ in _GAME_EXTRA_COLS:
+            if col not in existing:
+                conn.execute(text(f"ALTER TABLE games ADD COLUMN {col} {typ}"))
+
+
 # ── Dialect-aware insert helpers ──────────────────────────────────────────────
 
 def _insert_or_ignore_sql(db: Database, table: str, cols: list[str]) -> str:
@@ -268,6 +304,8 @@ def game_exists(db: Database, game_id: int) -> bool:
 _GAME_COLS = [
     "id", "date", "home_team", "away_team",
     "home_score", "away_score", "league", "season",
+    # MLB-only context (NULL for NBA); see _GAME_EXTRA_COLS / _migrate_schema.
+    "venue", "temp_f", "wind_mph", "condition",
 ]
 
 
