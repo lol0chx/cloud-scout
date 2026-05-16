@@ -256,6 +256,11 @@ struct TodayGame: Codable, Identifiable {
     let away_team_full: String
     let status: String
     let game_status: Int  // 1=scheduled, 2=live, 3=final
+    let league: String?   // "NBA" | "MLB"; absent on legacy responses → NBA
+
+    /// Sport for routing/styling; defaults to NBA when the backend omits it.
+    var sport: Sport { league == "MLB" ? .MLB : .NBA }
+    var leagueName: String { sport.rawValue }
 }
 
 struct StarterPlayer: Codable, Identifiable {

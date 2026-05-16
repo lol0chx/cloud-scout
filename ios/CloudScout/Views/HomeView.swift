@@ -47,11 +47,11 @@ struct HomeView: View {
                                         homeInsight: teamInsight[game.home_team_full],
                                         onSelectMatchup: {
                                             state.pendingPredictMatchup = PredictMatchup(
-                                                sport: .NBA,
+                                                sport: game.sport,
                                                 homeTeam: game.home_team_full,
                                                 awayTeam: game.away_team_full
                                             )
-                                            state.sport = .NBA
+                                            state.sport = game.sport
                                             state.selectedTab = 3
                                         }
                                     )
@@ -252,21 +252,51 @@ struct HomeView: View {
     }
 
     private func loadTeamInsights() async {
-        let teams = Set(todayGames.flatMap { [$0.home_team_full, $0.away_team_full] })
-        guard !teams.isEmpty else { return }
+        // One (team → sport) entry per team in any of today's games, both
+        // leagues. Team names don't collide across NBA/MLB so a single dict
+        // keyed by full name is safe.
+        var pairs: [String: Sport] = [:]
+        for g in todayGames {
+            pairs[g.home_team_full] = g.sport
+            pairs[g.away_team_full] = g.sport
+        }
+        guard !pairs.isEmpty else { return }
 
         await withTaskGroup(of: (String, TeamInsight?).self) { group in
-            for team in teams {
+            for (team, sport) in pairs {
                 group.addTask {
-                    async let perf = API.topPerformers(league: .NBA, team: team, n: 15)
-                    async let inj  = API.injuries(league: .NBA, team: team)
-                    let top = (try? await perf)?.players?
-                        .max { $0.avg_points < $1.avg_points }
+                    async let perf = API.topPerformers(league: sport, team: team, n: 15)
+                    async let inj  = API.injuries(league: sport, team: team)
+                    let resp = try? await perf
+                    let topLine: String?
+                    switch sport {
+                    case .NBA:
+                        if let p = resp?.players?.max(by: { $0.avg_points < $1.avg_points }) {
+                            topLine = "\(p.player) · \(String(format: "%.1f", p.avg_points)) PPG"
+                        } else { topLine = nil }
+                    case .MLB:
+                        if let b = resp?.batters?.max(by: { $0.HR < $1.HR }) {
+                            if b.HR > 0 {
+                                topLine = "\(b.player) · \(b.HR) HR"
+                            } else {
+                                let avg = String(format: "%.3f", b.AVG)
+                                    .replacingOccurrences(of: "0.", with: ".")
+                                topLine = "\(b.player) · \(avg) AVG"
+                            }
+                        } else { topLine = nil }
+                    }
                     let injured = (try? await inj)?.filter {
                         let s = $0.status.lowercased()
-                        return s == "out" || s == "doubtful" || s == "questionable"
+                        switch sport {
+                        case .NBA:
+                            return s == "out" || s == "doubtful" || s == "questionable"
+                        case .MLB:
+                            // MLB uses IL tiers / day-to-day, not the NBA labels.
+                            return s.contains("il") || s.contains("out")
+                                || s.contains("day-to-day")
+                        }
                     } ?? []
-                    return (team, TeamInsight(topScorer: top, injuryCount: injured.count))
+                    return (team, TeamInsight(topLine: topLine, injuryCount: injured.count))
                 }
             }
             for await (team, insight) in group {
@@ -277,7 +307,7 @@ struct HomeView: View {
 }
 
 struct TeamInsight {
-    let topScorer: NBATopPlayer?
+    let topLine: String?
     let injuryCount: Int
 }
 
@@ -410,9 +440,13 @@ struct LiveGameCard: View {
 
     private var isLive: Bool { game.game_status == 2 }
 
+    private var sport: Sport { game.sport }
+    private var leagueName: String { game.leagueName }
+    private var leagueColor: Color { sport == .MLB ? .csMLB : .csNBA }
+
     private var headline: String {
-        let away = TeamStyle.nickname(for: game.away_team_full, league: "NBA")
-        let home = TeamStyle.nickname(for: game.home_team_full, league: "NBA")
+        let away = TeamStyle.nickname(for: game.away_team_full, league: leagueName)
+        let home = TeamStyle.nickname(for: game.home_team_full, league: leagueName)
         return "\(away) @ \(home)"
     }
 
@@ -426,9 +460,9 @@ struct LiveGameCard: View {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack(spacing: 10) {
                         SourceHeader(
-                            leagueAbbr: "NBA",
-                            leagueColor: .csNBA,
-                            label: "NBA Today",
+                            leagueAbbr: leagueName,
+                            leagueColor: leagueColor,
+                            label: "\(leagueName) Today",
                             timestamp: statusLabel,
                             showsMenu: false
                         )
@@ -459,7 +493,7 @@ struct LiveGameCard: View {
                         InjuryListView(
                             awayTeam: game.away_team_full,
                             homeTeam: game.home_team_full,
-                            league: .NBA
+                            league: sport
                         )
                     } label: {
                         Chip(icon: "cross.case.fill", text: "\(totalInjuries) listed injuries")
@@ -468,7 +502,7 @@ struct LiveGameCard: View {
                 }
                 Spacer()
                 Button(action: onSelectMatchup) {
-                    Chip(icon: "chart.bar.fill", text: "Predict", foreground: .csNBA)
+                    Chip(icon: "chart.bar.fill", text: "Predict", foreground: leagueColor)
                 }
                 .buttonStyle(.plain)
             }
@@ -480,14 +514,14 @@ struct LiveGameCard: View {
     @ViewBuilder
     private func teamRow(team: String, insight: TeamInsight?) -> some View {
         HStack(spacing: 12) {
-            TeamBadge(team: team, league: "NBA", size: 32)
+            TeamBadge(team: team, league: leagueName, size: 32)
             VStack(alignment: .leading, spacing: 2) {
                 Text(team)
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(.csText)
                     .lineLimit(1)
-                if let top = insight?.topScorer {
-                    Text("\(top.player) · \(String(format: "%.1f", top.avg_points)) PPG")
+                if let line = insight?.topLine {
+                    Text(line)
                         .font(.system(size: 13))
                         .foregroundColor(.csSub)
                         .lineLimit(1)

@@ -40,7 +40,7 @@ from mlb_analytics import (
     mlb_win_probability,
 )
 from mlb_scraper import DEFAULT_SEASON as MLB_DEFAULT_SEASON
-from mlb_scraper import get_all_mlb_teams, scrape_mlb_team
+from mlb_scraper import get_all_mlb_teams, scrape_mlb_team, fetch_todays_mlb_games
 from scraper import scrape_team, scrape_injuries, fetch_todays_games, fetch_starters, scrape_referees, live_injuries
 
 app = FastAPI(title="CloudScout API", version="1.0.0")
@@ -475,8 +475,20 @@ def get_injuries(league: str = "NBA", team: str = ""):
 
 @app.get("/games/today")
 def get_todays_games():
-    """Get today's NBA scoreboard (scheduled, live, completed)."""
-    return fetch_todays_games()
+    """Today's NBA + MLB scoreboard (scheduled, live, completed).
+
+    Each item carries a `league` field so the feed can route/style it.
+    NBA first (matches prior ordering), then MLB.
+    """
+    nba = fetch_todays_games()
+    for g in nba:
+        g.setdefault("league", "NBA")
+    try:
+        mlb = fetch_todays_mlb_games()
+    except Exception as e:
+        print(f"MLB today's games failed: {e}")
+        mlb = []
+    return nba + mlb
 
 
 @app.get("/games/starters/{game_id}")
