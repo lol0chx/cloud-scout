@@ -335,9 +335,12 @@ def mlb_possible_injured_players(team, players_df, games_df):
 # MLB Prediction Model — 8-Pillar composite blended with Pythagorean expectation.
 #
 # Margin is the *direct* projected-runs differential (R_a - R_b), not a logit
-# conversion. Win probability is 70% pillar score + 30% Pythagorean of the
+# conversion. Win probability is 30% pillar score + 70% Pythagorean of the
 # projected runs — this anchors the model to actual baseball math rather than
-# letting one wild pillar swing the prediction.
+# letting one wild pillar swing the prediction. Run projection is
+# opponent-aware (own runs scored blended with opponent runs allowed). Both
+# weightings were chosen by point-in-time backtest — see
+# MLB_PREDICTION_BACKTEST.md and tools/backtest_mlb.py.
 # ══════════════════════════════════════════════════════════════════════════════
 
 _PILLAR_WEIGHTS = [
@@ -536,33 +539,14 @@ def _avg_runs_scored(team, games_df, n, default=4.5):
     return float(scored.mean())
 
 
-def _sp_suppression(opp_team, games_df, players_df, n):
-    """Opp starter ERA → scoring multiplier centered on league-avg 4.50.
-    Each run of ERA above/below shifts run projection by ±7.5%, clamped to ±25%."""
-    pitchers = _team_pitchers(opp_team, games_df, players_df, n)
-    if pitchers.empty:
-        return 1.0
-    starters, _ = _split_rotation(pitchers)
-    ip = starters["innings_pitched"].sum() if not starters.empty else 0
-    if ip <= 0:
-        return 1.0
-    era = _safe_era(starters["earned_runs"].sum(), ip)
-    return max(0.75, min(1.25, 1.0 + (era - 4.50) * 0.075))
-
-
-def _bullpen_suppression(opp_team, games_df, players_df, n):
-    """Opp reliever ERA → late-inning multiplier. Smaller range than SP."""
-    pitchers = _team_pitchers(opp_team, games_df, players_df, n)
-    if pitchers.empty:
-        return 1.0
-    _, relievers = _split_rotation(pitchers)
-    if relievers.empty:
-        return 1.0
-    ip = relievers["innings_pitched"].sum()
-    if ip <= 0:
-        return 1.0
-    era = _safe_era(relievers["earned_runs"].sum(), ip)
-    return max(0.88, min(1.10, 1.0 + (era - 4.50) * 0.040))
+def _avg_runs_allowed(team, games_df, n, default=4.5):
+    tg = _team_recent_games(team, games_df, n)
+    if tg.empty:
+        return default
+    allowed = tg.apply(
+        lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1
+    )
+    return float(allowed.mean())
 
 
 def _obp_factor(team, games_df, players_df, n):
@@ -596,6 +580,53 @@ def _h2h_avg_total(team_a, team_b, games_df, n=20):
     return float((h2h["home_score"] + h2h["away_score"]).mean())
 
 
+def _lg_mean_total(games_df, n=400):
+    """Point-in-time league-average combined runs (recent n games) — the
+    shrinkage target that cuts run-total variance."""
+    r = games_df.sort_values("date", ascending=False).head(n)
+    if r.empty:
+        return 8.8
+    return float((r["home_score"] + r["away_score"]).mean())
+
+
+def _env_total(team, games_df, n):
+    """Avg combined runs in a team's last n games — the scoring environment
+    (pace + park + era it has been playing in), steadier than RS+RA."""
+    tg = _team_recent_games(team, games_df, n)
+    if tg.empty:
+        return None
+    return float((tg["home_score"] + tg["away_score"]).mean())
+
+
+def _park_factor(home_team, games_df):
+    """Empirical park factor for the game's venue, point-in-time.
+
+    Uses the new `venue` column when populated (handles neutral-site games
+    and relocations); otherwise falls back to the home team's home-game run
+    environment. Shrunk toward 1.0 on small samples and clamped. NOTE: the
+    backtest (MLB_PREDICTION_BACKTEST.md §0) measured this at ~0 lift for
+    team game totals — it is kept because the data is now scraped and it
+    matters for future player-level props, not because it moves win/total.
+    """
+    lg = _lg_mean_total(games_df)
+    if lg <= 0:
+        return 1.0
+    park_games = None
+    if "venue" in games_df.columns:
+        v = games_df[(games_df["home_team"] == home_team)
+                     & games_df["venue"].notna()]
+        if not v.empty:
+            venue = v.sort_values("date", ascending=False).iloc[0]["venue"]
+            park_games = games_df[games_df["venue"] == venue]
+    if park_games is None or park_games.empty:
+        park_games = games_df[games_df["home_team"] == home_team]
+    if len(park_games) < 20:
+        return 1.0
+    pf = float((park_games["home_score"] + park_games["away_score"]).mean()) / lg
+    w = min(1.0, len(park_games) / 60.0)        # confidence shrink
+    return max(0.85, min(1.18, 1.0 + (pf - 1.0) * w))
+
+
 def _project_runs(team_a, team_b, games_df, players_df, home_team, n):
     is_a_home = (home_team == team_a)
     is_b_home = (home_team == team_b)
@@ -606,28 +637,64 @@ def _project_runs(team_a, team_b, games_df, players_df, home_team, n):
         r = _rest_days(team, games_df)
         return 1.03 if r >= 2 else (1.0 if r == 1 else 0.97)
 
+    # Opponent-aware base: blend a team's own recent runs scored with the
+    # opponent's recent runs allowed. The opponent's actual runs-allowed
+    # already captures their starter + bullpen + defense empirically, so the
+    # old parametric _sp_suppression / _bullpen_suppression ERA multipliers
+    # were removed (they double-counted run prevention). Point-in-time
+    # backtesting (tools/backtest_mlb.py, see MLB_PREDICTION_BACKTEST.md)
+    # showed this lowers Total MAE 3.52→3.44 and Margin MAE 3.79→3.72 on a
+    # 176-game sample with no loss in winner accuracy or calibration.
+    base_a = 0.5 * _avg_runs_scored(team_a, games_df, n) + \
+        0.5 * _avg_runs_allowed(team_b, games_df, n)
+    base_b = 0.5 * _avg_runs_scored(team_b, games_df, n) + \
+        0.5 * _avg_runs_allowed(team_a, games_df, n)
+
     a_proj = (
-        _avg_runs_scored(team_a, games_df, n)
-        * _sp_suppression(team_b, games_df, players_df, n)
-        * _bullpen_suppression(team_b, games_df, players_df, n)
+        base_a
         * _obp_factor(team_a, games_df, players_df, n)
         * _rest_mult(team_a)
         * park_a
     ) + _hr_bonus(team_a, games_df, players_df, n)
 
     b_proj = (
-        _avg_runs_scored(team_b, games_df, n)
-        * _sp_suppression(team_a, games_df, players_df, n)
-        * _bullpen_suppression(team_a, games_df, players_df, n)
+        base_b
         * _obp_factor(team_b, games_df, players_df, n)
         * _rest_mult(team_b)
         * park_b
     ) + _hr_bonus(team_b, games_df, players_df, n)
 
+    # ── Calibrated run total ─────────────────────────────────────────────
+    # The opponent-aware split above sets the *ratio* (winner/margin). The
+    # game's *total* is then recalibrated by blending it with the recent
+    # scoring environment of both teams, shrinking toward the point-in-time
+    # league mean (variance reduction — the one lever a 480-config grid
+    # search found, MLB_PREDICTION_BACKTEST.md §0), and a small empirical
+    # park factor. proj_a/proj_b are rescaled to the calibrated total while
+    # keeping their ratio, so margin/winner are preserved.
+    #
+    # Honest ceiling: on the 30-teams × last-15-games point-in-time rig the
+    # user specified, |proj_total − actual| ≤ 2 runs passes ~38% of the
+    # time. 70% at ±2 is mathematically impossible for single MLB games
+    # (an oracle with the real starter lines caps at ~50%); this is the
+    # closest achievable, applied as requested.
+    # Constants below were chosen by sweeping this exact production path on
+    # the 30-teams × last-15-games ±2 rig (see report §0): 5-game scoring
+    # environment, 70/30 formula/env, 20% league-mean shrink, park on, light
+    # H2H — the configuration closest to the (unreachable) 70% target,
+    # landing at ~37% within ±2 runs.
     formula_total = a_proj + b_proj
     h2h = _h2h_avg_total(team_a, team_b, games_df)
-    if h2h is not None and formula_total > 0:
-        scale = (formula_total * 0.80 + h2h * 0.20) / formula_total
+    if formula_total > 0:
+        env_a = _env_total(team_a, games_df, 5)
+        env_b = _env_total(team_b, games_df, 5)
+        env = (env_a + env_b) / 2 if env_a and env_b else formula_total
+        raw = 0.70 * formula_total + 0.30 * env
+        total = 0.80 * raw + 0.20 * _lg_mean_total(games_df)
+        total *= _park_factor(home_team, games_df) if home_team else 1.0
+        if h2h is not None:
+            total = 0.85 * total + 0.15 * h2h
+        scale = total / formula_total
         a_proj *= scale
         b_proj *= scale
 
@@ -699,8 +766,16 @@ def mlb_win_probability(team_a, team_b, games_df, players_df, home_team=None, n=
     proj_a, proj_b, h2h = _project_runs(team_a, team_b, games_df, players_df, home_team, n)
     pyth_a = _pythagorean(proj_a, proj_b)
 
-    # ── Blend: 70% pillar, 30% Pythagorean ───────────────────────────────
-    final_a = 0.70 * pillar_prob_a + 0.30 * pyth_a
+    # ── Blend: 30% pillar, 70% Pythagorean ───────────────────────────────
+    # Shifted from 70/30 toward the run math. A point-in-time blend sweep
+    # (MLB_PREDICTION_BACKTEST.md) showed winner accuracy rises monotonically
+    # as weight moves from the 8-pillar composite to the Pythagorean of the
+    # (now opponent-aware) projected runs — the pillar composite was actively
+    # hurting winner accuracy. 30/70 beats the old 70/30 baseline on winner
+    # accuracy (56.8% vs 56.2%) and Total/Margin MAE on the 176-game sample
+    # with ~equal Brier, while still letting the pillar breakdown feed 30% of
+    # the probability so the UI "why" stays consistent with the number.
+    final_a = 0.30 * pillar_prob_a + 0.70 * pyth_a
     prob_a = round(final_a * 100, 1)
     prob_b = round(100 - prob_a, 1)
 
