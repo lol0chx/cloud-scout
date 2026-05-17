@@ -19,7 +19,7 @@ from typing import Optional
 
 import pandas as pd
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 
 # Load .env at import time so every entry point (api.py, app.py, main.py,
 # scraper.py, scheduler.py) picks up DATABASE_URL / ANTHROPIC_API_KEY without
@@ -43,20 +43,41 @@ class Database:
 
     def __init__(self, url: str):
         self.url = url
+        # SECURITY: parse the URL ourselves first. SQLAlchemy's own
+        # make_url/create_engine raise errors whose message embeds the raw
+        # connection string — i.e. the DB password — which then lands in
+        # stdout/logs (this happened in prod with a malformed DATABASE_URL).
+        # Re-raise as a sanitized error with `from None` so neither the
+        # message nor the exception chain ever echoes the credential.
+        try:
+            parsed = make_url(url)
+        except Exception:
+            raise ValueError(
+                "Invalid DATABASE_URL format. Expected "
+                "postgresql://USER:PASSWORD@HOST:PORT/DBNAME "
+                "(note the '@' between password and host)."
+            ) from None
+
         # pool_pre_ping handles Supabase / managed-Postgres idle disconnects;
         # pool_recycle keeps a long-lived API process from holding stale conns.
         connect_args = {}
-        if url.startswith("sqlite"):
+        if parsed.drivername.startswith("sqlite"):
             # Allow the same SQLite connection to be used across threads
             # (FastAPI/uvicorn workers, Streamlit reruns, scheduler.py).
             connect_args["check_same_thread"] = False
-        self.engine: Engine = create_engine(
-            url,
-            pool_pre_ping=True,
-            pool_recycle=300,
-            future=True,
-            connect_args=connect_args,
-        )
+        try:
+            self.engine: Engine = create_engine(
+                parsed,
+                pool_pre_ping=True,
+                pool_recycle=300,
+                future=True,
+                connect_args=connect_args,
+            )
+        except Exception as e:
+            raise ValueError(
+                f"Could not initialise the database engine "
+                f"({type(e).__name__}). Check DATABASE_URL."
+            ) from None
 
     @property
     def is_postgres(self) -> bool:
