@@ -1,41 +1,39 @@
-# Fly.io deployment for the CloudScout FastAPI backend.
+# fly.toml app configuration file generated for cloudscout-api on 2026-05-16T21:39:46-07:00
 #
-# After installing the Fly CLI and running `fly auth login`, deploy with:
-#     fly launch --no-deploy   # one-time: creates the app, picks a region
-#     fly secrets set DATABASE_URL='postgresql://...'   # Supabase pooler URL
-#     fly secrets set ANTHROPIC_API_KEY='sk-ant-...'    # optional, AI Scout chat
-#     fly deploy
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-app = "cloudscout-api"   # rename after `fly launch` picks a unique app name
-primary_region = "iad"   # change to your nearest region; `fly platform regions`
+app = 'cloudscout-api'
+primary_region = 'iad'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  PORT = "8080"
+  PORT = '8080'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = 'stop'
   auto_start_machines = true
-  # Keep one machine warm so the first iOS request after idle isn't slow.
   min_machines_running = 1
 
   [http_service.concurrency]
-    type = "requests"
-    soft_limit = 30
+    type = 'requests'
     hard_limit = 60
+    soft_limit = 30
+
+  [[http_service.checks]]
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/health'
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "512mb"
+  size = 'shared-cpu-1x'
+  memory = '512mb'
+  cpu_kind = 'shared'
   cpus = 1
-
-[[http_service.checks]]
-  grace_period = "10s"
-  interval = "30s"
-  method = "GET"
-  timeout = "5s"
-  path = "/health"
+  memory_mb = 512
