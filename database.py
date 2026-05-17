@@ -15,6 +15,7 @@ which the rest of the codebase obtains via `init_db()`.
 """
 
 import os
+import threading
 from typing import Optional
 
 import pandas as pd
@@ -84,7 +85,15 @@ class Database:
         return self.engine.dialect.name == "postgresql"
 
     def close(self) -> None:
-        self.engine.dispose()
+        # No-op by design. The Database is a process-wide singleton (see
+        # init_db) and the engine owns a connection pool meant to live for
+        # the whole process. Endpoints call conn.close() in finally blocks;
+        # disposing the shared pool on every request was the cause of the
+        # 500s/timeouts (engine + pool rebuilt per request → Supabase
+        # connection exhaustion). Connections return to the pool via the
+        # `with engine.connect()` context managers; pool_recycle handles
+        # stale ones; process exit cleans up one-shot scripts.
+        pass
 
     def __enter__(self) -> "Database":
         return self
@@ -95,21 +104,38 @@ class Database:
 
 # ── Init / schema ─────────────────────────────────────────────────────────────
 
-def init_db(db_path: Optional[str] = None) -> Database:
-    """Open (and lazily create) the CloudScout database.
+_DB_CACHE: dict = {}
+_DB_LOCK = threading.Lock()
 
-    Returns a `Database` whose engine targets DATABASE_URL when set,
-    or sqlite:///cloudscout.db otherwise. Tables are created lazily
-    via CREATE TABLE IF NOT EXISTS so this is safe to call repeatedly.
+
+def init_db(db_path: Optional[str] = None) -> Database:
+    """Return the process-wide CloudScout database (cached per URL).
+
+    The Database/engine is created ONCE per resolved URL and reused for the
+    life of the process. SQLAlchemy engines are thread-safe and pool
+    connections, so this is exactly how they're meant to be used. Schema
+    setup (CREATE TABLE IF NOT EXISTS + migrations) runs only on first
+    creation — not on every call. Previously this built a fresh engine and
+    re-ran all schema DDL on every request, which exhausted Supabase's
+    connection pool and caused intermittent 500s/timeouts.
     """
     url = os.environ.get("DATABASE_URL") or _legacy_sqlite_url(db_path)
     # Heroku-style postgres:// → SQLAlchemy expects postgresql://
     if url.startswith("postgres://"):
         url = "postgresql://" + url[len("postgres://"):]
-    db = Database(url)
-    _ensure_schema(db)
-    _migrate_schema(db)
-    return db
+
+    cached = _DB_CACHE.get(url)
+    if cached is not None:
+        return cached
+    with _DB_LOCK:
+        cached = _DB_CACHE.get(url)        # double-check inside the lock
+        if cached is not None:
+            return cached
+        db = Database(url)
+        _ensure_schema(db)
+        _migrate_schema(db)
+        _DB_CACHE[url] = db
+        return db
 
 
 def _legacy_sqlite_url(db_path: Optional[str]) -> str:
