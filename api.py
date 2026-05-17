@@ -391,13 +391,19 @@ def get_top_performers(team: str, league: str = "NBA", n: int = 15):
     conn = _conn()
     try:
         games_df = load_games(conn, league=league.upper())
+        # mlb_top_*/top_performers only rank the given team's players, so when
+        # a team is specified (the Home-feed fan-out fires ~30 of these on
+        # every load) pull just that team's rows instead of the full ~82k-row
+        # table. team="" (league-wide section) still loads all. Identical
+        # results, ~30x less data — this is what was melting the machine.
+        team_filter = team or None
         if league.upper() == "MLB":
-            players_df = load_mlb_players(conn)
+            players_df = load_mlb_players(conn, team=team_filter)
             return {
                 "batters": _to_json(mlb_top_batters(team, n, players_df, games_df)),
                 "pitchers": _to_json(mlb_top_pitchers(team, n, players_df, games_df)),
             }
-        players_df = load_players(conn)
+        players_df = load_players(conn, team=team_filter)
         return {"players": _to_json(top_performers(team, n, players_df, games_df))}
     finally:
         conn.close()
