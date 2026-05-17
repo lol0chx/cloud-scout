@@ -289,3 +289,22 @@ struct ChatMessage: Identifiable, Codable {
 
     enum CodingKeys: String, CodingKey { case role, content }
 }
+
+// Projected player line vs a specific opponent (/player/projected).
+// `projected` / `derived` have role-dependent keys (batter: hits/home_runs
+// /rbi/runs/walks/strikeouts + AVG; pitcher: strikeouts_pitched/earned_runs
+// /hits_allowed/walks_allowed/innings_pitched + ERA/WHIP) so they decode as
+// dynamic [String: Double] maps.
+struct PlayerProjection: Codable {
+    let player: String
+    let opponent: String
+    let role: String
+    let projected: [String: Double]
+    let derived: [String: Double]
+    let confidence: String
+    let h2h_games: Int
+    let season_games_used: Int
+    let streak_context: String
+    let injury_status: String?
+    let injury_detail: String?
+}

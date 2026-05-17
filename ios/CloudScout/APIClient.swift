@@ -145,6 +145,11 @@ struct API {
         return dict.filter { !skip.contains($0.key) }.sorted { $0.key < $1.key }.map { ($0.key, "\($0.value)") }
     }
 
+    static func playerProjected(league: Sport, name: String, opponent: String,
+                                role: String = "batter", n: Int = 15) async throws -> PlayerProjection {
+        try await get("/player/projected?league=\(league.rawValue)&name=\(enc(name))&opponent=\(enc(opponent))&role=\(enc(role))&n=\(n)")
+    }
+
     struct ScrapeRequest: Encodable {
         let league: String
         let team: String

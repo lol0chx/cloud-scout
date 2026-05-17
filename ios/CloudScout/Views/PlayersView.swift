@@ -380,8 +380,10 @@ struct PlayerDetailView: View {
     @State private var log: [[String: String]] = []
     @State private var vsTeam = ""
     @State private var vsStats: [(String, String)] = []
+    @State private var projection: PlayerProjection? = nil
     @State private var loadingStats = false
     @State private var loadingVs = false
+    @State private var loadingProj = false
 
     private var isMLB: Bool { sport == .MLB }
     private var leagueAccent: Color { isMLB ? .csMLB : .csNBA }
@@ -413,6 +415,7 @@ struct PlayerDetailView: View {
                 } else {
                     if !stats.isEmpty { seasonStatsCard }
                     vsOpponentCard
+                    if isMLB && (projection != nil || loadingProj) { projectedCard }
                     gameLogCard
                 }
             }
@@ -423,8 +426,9 @@ struct PlayerDetailView: View {
         .background(Color.csBg.ignoresSafeArea())
         .task { await loadStats() }
         .onChange(of: vsTeam) { _, _ in
-            guard !vsTeam.isEmpty else { vsStats = []; return }
+            guard !vsTeam.isEmpty else { vsStats = []; projection = nil; return }
             Task { await loadVs() }
+            if isMLB { Task { await loadProjected() } }
         }
     }
 
@@ -527,6 +531,63 @@ struct PlayerDetailView: View {
         }
     }
 
+    @ViewBuilder
+    private var projectedCard: some View {
+        if loadingProj && projection == nil {
+            VStack(alignment: .leading, spacing: 10) {
+                SectionHeader(title: "Projected")
+                ProgressView().tint(.csNBA).scaleEffect(0.8)
+            }
+        } else if let p = projection {
+            VStack(alignment: .leading, spacing: 10) {
+                SectionHeader(title: "Projected vs \(p.opponent)")
+                Text("Confidence \(p.confidence.uppercased())  ·  H2H \(p.h2h_games)  ·  \(p.season_games_used) games"
+                     + (p.streak_context == "hot" ? "  ·  🔥 hot"
+                        : p.streak_context == "cold" ? "  ·  ❄️ cold" : ""))
+                    .font(.system(size: 11)).foregroundColor(.csSub)
+                if let inj = p.injury_status, !inj.isEmpty,
+                   inj != "active", inj != "probable" {
+                    Text("⚠️ \(inj.uppercased())" + (p.injury_detail.map { " · \($0)" } ?? ""))
+                        .font(.system(size: 11, weight: .semibold)).foregroundColor(.orange)
+                }
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    ForEach(projTiles(p), id: \.0) { label, value in
+                        StatBox(value: value, label: label, accent: leagueAccent)
+                    }
+                }
+            }
+        }
+    }
+
+    private func projTiles(_ p: PlayerProjection) -> [(String, String)] {
+        func f(_ d: [String: Double], _ k: String, _ dec: Int) -> String {
+            d[k].map { String(format: "%.\(dec)f", $0) } ?? "—"
+        }
+        if role == "pitcher" {
+            return [
+                ("ERA",  f(p.derived,   "ERA", 2)),
+                ("WHIP", f(p.derived,   "WHIP", 2)),
+                ("K",    f(p.projected, "strikeouts_pitched", 1)),
+                ("IP",   f(p.projected, "innings_pitched", 1)),
+                ("ER",   f(p.projected, "earned_runs", 1)),
+                ("H",    f(p.projected, "hits_allowed", 1)),
+                ("BB",   f(p.projected, "walks_allowed", 1)),
+            ]
+        }
+        let avg = p.derived["AVG"].map {
+            String(format: "%.3f", $0).replacingOccurrences(of: "0.", with: ".")
+        } ?? "—"
+        return [
+            ("AVG", avg),
+            ("H",   f(p.projected, "hits", 1)),
+            ("HR",  f(p.projected, "home_runs", 2)),
+            ("RBI", f(p.projected, "rbi", 1)),
+            ("R",   f(p.projected, "runs", 1)),
+            ("BB",  f(p.projected, "walks", 1)),
+            ("SO",  f(p.projected, "strikeouts", 1)),
+        ]
+    }
+
     private var gameLogCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: "Game Log")
@@ -576,5 +637,12 @@ struct PlayerDetailView: View {
         do { vsStats = try await API.playerVsTeam(league: sport, name: player, opponent: vsTeam, role: role) }
         catch { vsStats = [] }
         loadingVs = false
+    }
+
+    private func loadProjected() async {
+        loadingProj = true
+        do { projection = try await API.playerProjected(league: sport, name: player, opponent: vsTeam, role: role) }
+        catch { projection = nil }
+        loadingProj = false
     }
 }
