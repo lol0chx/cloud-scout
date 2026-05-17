@@ -463,32 +463,46 @@ def get_player_projected(name: str, opponent: str, league: str = "NBA",
     opponent, and an opponent factor. Returns breakdown, H2H log, injury
     flag, streak context, and confidence.
     """
-    conn = _conn()
-    try:
-        league_u = league.upper()
-        games_df = load_games(conn, league=league_u)
-        injuries_df = load_injuries(conn, league=league_u)
-        if league_u == "MLB":
-            players_df = load_mlb_players(conn)
-            if players_df.empty:
-                raise HTTPException(404, "No player data in database")
-            result = mlb_player_projected_stats(
-                name, opponent, players_df, games_df,
-                role=role, injuries_df=injuries_df, n=n
-            )
-        else:
-            players_df = load_players(conn)
-            if players_df.empty:
-                raise HTTPException(404, "No player data in database")
-            result = player_projected_stats(
-                name, opponent, players_df, games_df,
-                injuries_df=injuries_df, n=n
-            )
-        if "error" in result:
-            raise HTTPException(404, result["error"])
-        return result
-    finally:
-        conn.close()
+    league_u = league.upper()
+    key = ("proj", league_u, role, name, opponent, n)
+
+    cached = _pred_get(key)              # warm hit: instant, no DB/compute
+    if cached is not None:
+        return cached
+
+    with _PRED_COMPUTE:                  # serialize heavy compute (1-CPU box)
+        cached = _pred_get(key)          # a concurrent req may have just done it
+        if cached is not None:
+            return cached
+        conn = _conn()
+        try:
+            games_df = load_games(conn, league=league_u)
+            injuries_df = load_injuries(conn, league=league_u)
+            if league_u == "MLB":
+                # mlb_player_projected_stats filters by role internally, so
+                # load only that role (~half the table) — identical result,
+                # far less data than the full ~82k rows.
+                players_df = load_mlb_players(conn, role=role)
+                if players_df.empty:
+                    raise HTTPException(404, "No player data in database")
+                result = mlb_player_projected_stats(
+                    name, opponent, players_df, games_df,
+                    role=role, injuries_df=injuries_df, n=n
+                )
+            else:
+                players_df = load_players(conn)
+                if players_df.empty:
+                    raise HTTPException(404, "No player data in database")
+                result = player_projected_stats(
+                    name, opponent, players_df, games_df,
+                    injuries_df=injuries_df, n=n
+                )
+            if "error" in result:
+                raise HTTPException(404, result["error"])
+            _pred_put(key, result)       # cache success only (not 404s)
+            return result
+        finally:
+            conn.close()
 
 
 @app.get("/player/log")

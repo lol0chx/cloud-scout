@@ -18,13 +18,13 @@ primary_region = 'sjc'
 [http_service]
   internal_port = 8080
   force_https = true
-  # Scale to zero: with min_machines_running = 0, Fly stops all machines
-  # when the app is idle (≈ $0 while no one is using it) and auto-starts
-  # one on the next incoming request. Trade-off: a ~1-3s cold start on
-  # the first request after idle.
+  # Keep one machine warm 24/7. Scale-to-zero (min=0) caused a ~10s cold
+  # start + intermittent 500s on every tab change during real use — not
+  # acceptable for a released app. ~$5-8/mo for an always-responsive app
+  # is the right trade. The 2nd machine still auto-stops when idle.
   auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
 
   [http_service.concurrency]
     type = 'requests'
