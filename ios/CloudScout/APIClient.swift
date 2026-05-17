@@ -4,6 +4,11 @@ import Foundation
 // (e.g. "http://192.168.1.100:8000") when testing against a local server.
 let API_BASE = ProcessInfo.processInfo.environment["API_BASE"] ?? "https://cloudscout-api.fly.dev"
 
+// Shared secret for mutating/cost-bearing POST endpoints (scrape, AI chat).
+// Set API_KEY in the Xcode scheme's environment variables to the same value
+// as the server's API_KEY secret. Kept out of source so it isn't in git.
+let API_KEY = ProcessInfo.processInfo.environment["API_KEY"] ?? ""
+
 struct ChatPayload: Encodable {
     let league: String
     let message: String
@@ -43,6 +48,9 @@ struct API {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !API_KEY.isEmpty {
+            req.setValue(API_KEY, forHTTPHeaderField: "X-API-Key")
+        }
         req.httpBody = try JSONEncoder().encode(body)
         let (data, res) = try await URLSession.shared.data(for: req)
         if let http = res as? HTTPURLResponse, http.statusCode != 200 {

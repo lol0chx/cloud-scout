@@ -9,7 +9,7 @@ import os
 
 import anthropic
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from nba_api.stats.static import teams as nba_teams
 from pydantic import BaseModel
@@ -52,6 +52,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def require_key(x_api_key: str = Header(None, alias="X-API-Key")):
+    """Shared-secret guard for mutating / cost-bearing endpoints.
+
+    Disabled when API_KEY is unset on the server (so deploying this code
+    before the secret is configured doesn't break scrape/AI). Once API_KEY
+    is set as a Fly secret, these endpoints require a matching X-API-Key
+    header — blocking anonymous internet abuse of scrape jobs and /ai/chat.
+    Read (GET) endpoints stay open: they serve public sports data.
+    """
+    expected = os.environ.get("API_KEY")
+    if not expected:
+        return
+    if x_api_key != expected:
+        raise HTTPException(401, "Unauthorized")
 
 
 def _conn():
@@ -449,7 +465,7 @@ class ScrapeRequest(BaseModel):
     season: int = MLB_DEFAULT_SEASON
 
 
-@app.post("/scrape/team")
+@app.post("/scrape/team", dependencies=[Depends(require_key)])
 def scrape(req: ScrapeRequest):
     try:
         if req.league.upper() == "MLB":
@@ -463,7 +479,7 @@ def scrape(req: ScrapeRequest):
 
 # ── Injuries ─────────────────────────────────────────────────────────────────
 
-@app.post("/injuries/refresh")
+@app.post("/injuries/refresh", dependencies=[Depends(require_key)])
 def refresh_injuries(league: str = "NBA"):
     """Fetch latest injury report from ESPN and save to database."""
     result = scrape_injuries(league.upper())
@@ -516,7 +532,7 @@ def get_game_starters(game_id: str):
 
 # ── Referees ──────────────────────────────────────────────────────────────────
 
-@app.post("/referees/refresh")
+@app.post("/referees/refresh", dependencies=[Depends(require_key)])
 def refresh_referees():
     """Fetch latest referee stats and today's assignments."""
     stats_count, assign_count = scrape_referees()
@@ -551,7 +567,7 @@ class ChatRequest(BaseModel):
     history: list = []
 
 
-@app.post("/ai/chat")
+@app.post("/ai/chat", dependencies=[Depends(require_key)])
 def ai_chat(req: ChatRequest):
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
