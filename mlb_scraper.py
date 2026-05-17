@@ -13,7 +13,10 @@ from datetime import datetime, timedelta
 import pandas as pd
 import statsapi
 
-from database import init_db, game_exists, insert_game, insert_mlb_players
+from database import (
+    init_db, game_exists, insert_game, insert_mlb_players,
+    game_scores, delete_game,
+)
 
 LEAGUE = "MLB"
 REQUEST_DELAY = 0.5  # seconds between API calls
@@ -199,19 +202,13 @@ def fetch_mlb_games(team, season=DEFAULT_SEASON, last=15):
         game_id = game["game_id"]
 
         if game_exists(conn, game_id):
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT home_score, away_score FROM games WHERE id = ?", (game_id,)
-            )
-            row = cursor.fetchone()
+            row = game_scores(conn, game_id)
             if row and not (row[0] == 0 and row[1] == 0):
                 print(f"  Game {game_id} already in DB, skipping.")
                 continue
             # Corrupt 0-0 record — delete and re-fetch
             print(f"  Game {game_id} has 0-0 score, re-fetching...")
-            cursor.execute("DELETE FROM games WHERE id = ?", (game_id,))
-            cursor.execute("DELETE FROM mlb_players WHERE game_id = ?", (game_id,))
-            conn.commit()
+            delete_game(conn, game_id, "mlb_players")
 
         rec = {
             "game_id": game_id,

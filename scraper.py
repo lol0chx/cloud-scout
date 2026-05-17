@@ -21,6 +21,7 @@ from nba_api.stats.endpoints import TeamGameLog, BoxScoreTraditionalV3
 
 from database import (
     init_db, game_exists, insert_game, insert_players,
+    game_scores, game_has_shooting, delete_game,
     clear_injuries, upsert_injuries, load_injuries,
     clear_referee_stats, upsert_referee_stats,
     clear_referee_assignments, upsert_referee_assignments,
@@ -144,17 +145,9 @@ def fetch_games(team, season=DEFAULT_SEASON, last=15):
 
         # Skip games we already have, unless scores are 0-0 or player stats are missing
         if game_exists(conn, game_id_int):
-            cursor = conn.cursor()
-            cursor.execute("SELECT home_score, away_score FROM games WHERE id = ?", (game_id_int,))
-            score_row = cursor.fetchone()
-            is_corrupt = score_row and score_row[0] == 0 and score_row[1] == 0
-
-            # Check if player shooting columns are populated
-            cursor.execute(
-                "SELECT COUNT(*) FROM players WHERE game_id = ? AND field_goals_made IS NOT NULL",
-                (game_id_int,),
-            )
-            has_shooting = cursor.fetchone()[0] > 0
+            score_row = game_scores(conn, game_id_int)
+            is_corrupt = bool(score_row and score_row[0] == 0 and score_row[1] == 0)
+            has_shooting = game_has_shooting(conn, game_id_int)
 
             if not is_corrupt and has_shooting:
                 print(f"  Game {game_id} already in DB, skipping.")
@@ -163,9 +156,7 @@ def fetch_games(team, season=DEFAULT_SEASON, last=15):
             # Stale record — delete and re-fetch
             reason = "0-0 score" if is_corrupt else "missing shooting data"
             print(f"  Game {game_id} has {reason}, re-fetching...")
-            cursor.execute("DELETE FROM games WHERE id = ?", (game_id_int,))
-            cursor.execute("DELETE FROM players WHERE game_id = ?", (game_id_int,))
-            conn.commit()
+            delete_game(conn, game_id_int, "players")
 
         # Parse MATCHUP to determine home/away
         # Format: "LAL vs. BOS" (home) or "LAL @ BOS" (away)

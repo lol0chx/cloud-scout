@@ -301,6 +301,46 @@ def game_exists(db: Database, game_id: int) -> bool:
     return row is not None
 
 
+def game_scores(db: Database, game_id: int):
+    """(home_score, away_score) for a game id, or None if it's not stored.
+
+    Replaces the raw sqlite3 `conn.cursor()` access the scrapers used
+    before the SQLAlchemy rewrite (Database has no `.cursor()`).
+    """
+    with db.engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT home_score, away_score FROM games WHERE id = :id"),
+            {"id": game_id},
+        ).first()
+    return (row[0], row[1]) if row else None
+
+
+def game_has_shooting(db: Database, game_id: int) -> bool:
+    """True if this NBA game's player rows have shooting columns populated
+    (used to re-fetch games stored before shooting stats were scraped)."""
+    with db.engine.connect() as conn:
+        n = conn.execute(
+            text("SELECT COUNT(*) FROM players "
+                 "WHERE game_id = :id AND field_goals_made IS NOT NULL"),
+            {"id": game_id},
+        ).scalar()
+    return (n or 0) > 0
+
+
+def delete_game(db: Database, game_id: int, players_table: str) -> None:
+    """Delete a game and its player rows so it can be re-fetched (stale /
+    corrupt 0-0 records). `players_table` is whitelisted to the two known
+    tables, so the f-string is injection-safe."""
+    if players_table not in ("players", "mlb_players"):
+        raise ValueError(f"unexpected players table: {players_table!r}")
+    with db.engine.begin() as conn:
+        conn.execute(text("DELETE FROM games WHERE id = :id"), {"id": game_id})
+        conn.execute(
+            text(f"DELETE FROM {players_table} WHERE game_id = :id"),
+            {"id": game_id},
+        )
+
+
 _GAME_COLS = [
     "id", "date", "home_team", "away_team",
     "home_score", "away_score", "league", "season",
