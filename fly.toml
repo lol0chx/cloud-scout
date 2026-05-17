@@ -4,7 +4,10 @@
 #
 
 app = 'cloudscout-api'
-primary_region = 'iad'
+# sjc (San Jose) is the closest robust Fly region to Supabase's
+# aws-1-us-west-2 — keeps DB round-trips in-region instead of crossing
+# the country (iad). Big latency win for the data-heavy endpoints.
+primary_region = 'sjc'
 
 [build]
   dockerfile = 'Dockerfile'
