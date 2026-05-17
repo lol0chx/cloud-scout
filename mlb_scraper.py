@@ -110,6 +110,7 @@ def fetch_todays_mlb_games():
             "away_team_full": away_full,
             "status": status or "Scheduled",
             "game_status": gs,
+            "date": g.get("game_date", today),      # "YYYY-MM-DD"
             "league": "MLB",
         })
     return games

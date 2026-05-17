@@ -517,8 +517,23 @@ def fetch_todays_games():
         print(f"Failed to fetch NBA scoreboard: {e}")
         return []
 
+    scoreboard = data.get("scoreboard", {})
+    board_date = scoreboard.get("gameDate") or ""  # "YYYY-MM-DD" fallback
+
+    def _game_date(g):
+        # gameCode is per-game and reliable even when tip-off time is "TBD"
+        # (e.g. "20260516/OKCLAL" -> "2026-05-16"). Fall back to the
+        # scoreboard date, then the UTC/ET timestamps.
+        code = (g.get("gameCode") or "").split("/")[0]
+        if len(code) == 8 and code.isdigit():
+            return f"{code[:4]}-{code[4:6]}-{code[6:8]}"
+        if board_date:
+            return board_date
+        ts = g.get("gameTimeUTC") or g.get("gameEt") or ""
+        return ts[:10] if len(ts) >= 10 else ""
+
     games = []
-    for g in data.get("scoreboard", {}).get("games", []):
+    for g in scoreboard.get("games", []):
         games.append({
             "game_id": g.get("gameId", ""),
             "home_team": g.get("homeTeam", {}).get("teamName", ""),
@@ -527,6 +542,7 @@ def fetch_todays_games():
             "away_team_full": g.get("awayTeam", {}).get("teamCity", "") + " " + g.get("awayTeam", {}).get("teamName", ""),
             "status": g.get("gameStatusText", ""),
             "game_status": g.get("gameStatus", 0),  # 1=scheduled, 2=live, 3=final
+            "date": _game_date(g),                  # "YYYY-MM-DD"
         })
     return games
 

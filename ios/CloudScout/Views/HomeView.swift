@@ -430,11 +430,35 @@ struct LiveGameCard: View {
     var homeInsight: TeamInsight? = nil
     var onSelectMatchup: () -> Void = {}
 
+    private static let isoDateFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+    private static let prettyDateFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "EEE, MMM d"   // e.g. "Mon, May 18"
+        return f
+    }()
+
+    // Scheduled games: show the real game date (known even when tip-off is
+    // "TBD") instead of a blanket "Today" that was wrong for future games.
+    private static func scheduledLabel(_ date: String?) -> String {
+        guard let s = date, let d = isoDateFmt.date(from: s) else { return "Scheduled" }
+        if Calendar.current.isDateInToday(d) { return "Today" }
+        if Calendar.current.isDateInTomorrow(d) { return "Tomorrow" }
+        return prettyDateFmt.string(from: d)
+    }
+
     private var statusLabel: String {
         switch game.game_status {
         case 2: return "Live now"
         case 3: return "Final"
-        default: return "Today"
+        default: return Self.scheduledLabel(game.date)
         }
     }
 
