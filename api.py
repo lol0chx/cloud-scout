@@ -6,6 +6,8 @@ Run with: uvicorn api:app --reload
 """
 
 import os
+import threading
+import time
 
 import anthropic
 import pandas as pd
@@ -76,6 +78,40 @@ def _conn():
 
 def _to_json(df: pd.DataFrame) -> list:
     return df.where(pd.notnull(df), None).to_dict(orient="records")
+
+
+# ── Prediction result cache + single-flight ──────────────────────────────────
+# /team/prediction recomputes the heavy 8-pillar model per call. The data
+# loaders are cached, but 8 concurrent cold calls all recompute before the
+# first finishes (stampede) and saturate the 1-shared-CPU/512MB machine →
+# 502s while scrolling matchups. A given matchup is deterministic until the
+# next scrape, so: cache the result (TTL), and serialize the heavy compute
+# (parallel pandas gives no speedup on 1 CPU and is what OOMs it). Warm
+# cache hits bypass the lock entirely.
+_PRED_CACHE: dict = {}
+_PRED_LOCK = threading.Lock()       # guards the cache dict
+_PRED_COMPUTE = threading.Lock()    # serializes the heavy model compute
+_PRED_TTL = float(os.environ.get("CLOUDSCOUT_PRED_TTL", "300"))
+_PRED_MAX = 128
+
+
+def _pred_get(key):
+    hit = _PRED_CACHE.get(key)
+    if hit is not None and (time.monotonic() - hit[0]) < _PRED_TTL:
+        return hit[1]
+    return None
+
+
+def _pred_put(key, value):
+    with _PRED_LOCK:
+        if len(_PRED_CACHE) >= _PRED_MAX and key not in _PRED_CACHE:
+            del _PRED_CACHE[min(_PRED_CACHE, key=lambda k: _PRED_CACHE[k][0])]
+        _PRED_CACHE[key] = (time.monotonic(), value)
+
+
+def clear_pred_cache():
+    with _PRED_LOCK:
+        _PRED_CACHE.clear()
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -279,53 +315,64 @@ def get_projected_total(team_a: str, team_b: str, home: str = "", n: int = 10):
 
 @app.get("/team/prediction")
 def get_prediction(team_a: str, team_b: str, league: str = "NBA", home: str = ""):
-    conn = _conn()
-    try:
-        league_u = league.upper()
-        df = load_games(conn, league=league_u)
-        if df.empty:
-            raise HTTPException(404, "No games in database")
-        home_team = home if home in [team_a, team_b] else None
+    league_u = league.upper()
+    home_team = home if home in [team_a, team_b] else None
+    key = (league_u, team_a, team_b, home_team)
 
-        def _record(team):
-            tg = df[(df["home_team"] == team) | (df["away_team"] == team)]
-            if tg.empty:
-                return {"wins": 0, "losses": 0, "win_pct": 0.0}
-            s = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
-            c = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
-            w = int((s.values > c.values).sum())
-            return {"wins": w, "losses": len(tg) - w, "win_pct": round(w / len(tg) * 100, 1)}
+    cached = _pred_get(key)              # warm hit: no lock, no DB, instant
+    if cached is not None:
+        return cached
 
-        sc_a, st_a = win_streak(team_a, df)
-        sc_b, st_b = win_streak(team_b, df)
-        base = {
-            "team_a": team_a, "team_b": team_b,
-            "team_a_record": _record(team_a), "team_b_record": _record(team_b),
-            "team_a_streak": {"count": sc_a, "type": st_a},
-            "team_b_streak": {"count": sc_b, "type": st_b},
-        }
+    with _PRED_COMPUTE:                  # serialize heavy compute (1-CPU box)
+        cached = _pred_get(key)          # a concurrent req may have just done it
+        if cached is not None:
+            return cached
+        conn = _conn()
+        try:
+            df = load_games(conn, league=league_u)
+            if df.empty:
+                raise HTTPException(404, "No games in database")
 
-        if league_u == "MLB":
-            players_df = load_mlb_players(conn)
-            mlb = mlb_win_probability(team_a, team_b, df, players_df, home_team=home_team, n=20)
-            base.update({
-                "prob_a": mlb["prob_a"],
-                "prob_b": mlb["prob_b"],
-                "margin": mlb["margin"],
-                "proj_runs_a": mlb["proj_runs_a"],
-                "proj_runs_b": mlb["proj_runs_b"],
-                "projected_total": mlb["projected_total"],
-                "pythagorean_prob_a": mlb["pythagorean_prob_a"],
-                "pillars": mlb["pillars"],
-                "h2h_avg_total": mlb["h2h_avg_total"],
-            })
-        else:
-            prob_a, prob_b, margin = win_probability(team_a, team_b, df, home_team=home_team, pts_per_logit=6.0)
-            base.update({"prob_a": prob_a, "prob_b": prob_b, "margin": margin})
+            def _record(team):
+                tg = df[(df["home_team"] == team) | (df["away_team"] == team)]
+                if tg.empty:
+                    return {"wins": 0, "losses": 0, "win_pct": 0.0}
+                s = tg.apply(lambda r: r["home_score"] if r["home_team"] == team else r["away_score"], axis=1)
+                c = tg.apply(lambda r: r["away_score"] if r["home_team"] == team else r["home_score"], axis=1)
+                w = int((s.values > c.values).sum())
+                return {"wins": w, "losses": len(tg) - w, "win_pct": round(w / len(tg) * 100, 1)}
 
-        return base
-    finally:
-        conn.close()
+            sc_a, st_a = win_streak(team_a, df)
+            sc_b, st_b = win_streak(team_b, df)
+            base = {
+                "team_a": team_a, "team_b": team_b,
+                "team_a_record": _record(team_a), "team_b_record": _record(team_b),
+                "team_a_streak": {"count": sc_a, "type": st_a},
+                "team_b_streak": {"count": sc_b, "type": st_b},
+            }
+
+            if league_u == "MLB":
+                players_df = load_mlb_players(conn)
+                mlb = mlb_win_probability(team_a, team_b, df, players_df, home_team=home_team, n=20)
+                base.update({
+                    "prob_a": mlb["prob_a"],
+                    "prob_b": mlb["prob_b"],
+                    "margin": mlb["margin"],
+                    "proj_runs_a": mlb["proj_runs_a"],
+                    "proj_runs_b": mlb["proj_runs_b"],
+                    "projected_total": mlb["projected_total"],
+                    "pythagorean_prob_a": mlb["pythagorean_prob_a"],
+                    "pillars": mlb["pillars"],
+                    "h2h_avg_total": mlb["h2h_avg_total"],
+                })
+            else:
+                prob_a, prob_b, margin = win_probability(team_a, team_b, df, home_team=home_team, pts_per_logit=6.0)
+                base.update({"prob_a": prob_a, "prob_b": prob_b, "margin": margin})
+
+            _pred_put(key, base)
+            return base
+        finally:
+            conn.close()
 
 
 # ── Top Performers ────────────────────────────────────────────────────────────
@@ -473,6 +520,7 @@ def scrape(req: ScrapeRequest):
         else:
             g, p = scrape_team(req.team, last=req.last)
         clear_query_cache()   # fresh data should show immediately
+        clear_pred_cache()
         return {"games_added": len(g), "players_added": len(p)}
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -485,6 +533,7 @@ def refresh_injuries(league: str = "NBA"):
     """Fetch latest injury report from ESPN and save to database."""
     result = scrape_injuries(league.upper())
     clear_query_cache()
+    clear_pred_cache()
     return {"injuries_updated": len(result)}
 
 
@@ -539,6 +588,7 @@ def refresh_referees():
     """Fetch latest referee stats and today's assignments."""
     stats_count, assign_count = scrape_referees()
     clear_query_cache()
+    clear_pred_cache()
     return {"stats_updated": stats_count, "assignments_updated": assign_count}
 
 
