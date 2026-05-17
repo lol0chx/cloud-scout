@@ -352,7 +352,16 @@ def get_prediction(team_a: str, team_b: str, league: str = "NBA", home: str = ""
             }
 
             if league_u == "MLB":
-                players_df = load_mlb_players(conn)
+                # mlb_win_probability only ever looks at team_a/team_b player
+                # rows (its pillar/projection helpers filter by team), so
+                # load just those two teams instead of the full ~82k-row
+                # table. Far less DB transfer + memory + pandas work — lets
+                # the small scale-to-zero machine handle a cold first request.
+                players_df = pd.concat(
+                    [load_mlb_players(conn, team=team_a),
+                     load_mlb_players(conn, team=team_b)],
+                    ignore_index=True,
+                )
                 mlb = mlb_win_probability(team_a, team_b, df, players_df, home_team=home_team, n=20)
                 base.update({
                     "prob_a": mlb["prob_a"],
