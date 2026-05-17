@@ -5,9 +5,20 @@ import Foundation
 let API_BASE = ProcessInfo.processInfo.environment["API_BASE"] ?? "https://cloudscout-api.fly.dev"
 
 // Shared secret for mutating/cost-bearing POST endpoints (scrape, AI chat).
-// Set API_KEY in the Xcode scheme's environment variables to the same value
-// as the server's API_KEY secret. Kept out of source so it isn't in git.
-let API_KEY = ProcessInfo.processInfo.environment["API_KEY"] ?? ""
+// Baked into the app at build time: Secrets.xcconfig (gitignored) →
+// Info.plist $(API_KEY) → read here from the bundle. This works for a
+// normally-launched installed app; the old ProcessInfo.environment
+// approach only worked when launched from Xcode with the debugger.
+// The env var still wins, so local dev can override without rebuilding.
+let API_KEY: String = {
+    if let env = ProcessInfo.processInfo.environment["API_KEY"], !env.isEmpty {
+        return env
+    }
+    let v = (Bundle.main.object(forInfoDictionaryKey: "API_KEY") as? String) ?? ""
+    // If the xcconfig isn't wired the placeholder stays literal — treat as
+    // unset rather than sending a bogus header.
+    return v.contains("$(") ? "" : v
+}()
 
 struct ChatPayload: Encodable {
     let league: String

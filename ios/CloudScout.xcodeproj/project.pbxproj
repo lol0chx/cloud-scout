@@ -42,6 +42,7 @@
 		CCD5128929A5B0A33BBBC4E8 /* FormView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FormView.swift; sourceTree = "<group>"; };
 		E1D389AD87F7310AAB035CC2 /* GamesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GamesView.swift; sourceTree = "<group>"; };
 		E270DE2FA7E8A797064FB3EE /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		E60164422FBA157D0032586B /* Secrets.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Secrets.xcconfig; sourceTree = "<group>"; };
 		E6909194202562CCEE16D13A /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		EE7F448344B166F289954F86 /* PlayersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayersView.swift; sourceTree = "<group>"; };
 		EF4521A09656ECEDDC80011E /* StandingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StandingsView.swift; sourceTree = "<group>"; };
@@ -60,6 +61,7 @@
 				E6909194202562CCEE16D13A /* Theme.swift */,
 				9BDDD8C20BB2D10931578A69 /* Components */,
 				C6248C404168852519DFDCC1 /* Views */,
+				E60164422FBA157D0032586B /* Secrets.xcconfig */,
 			);
 			path = CloudScout;
 			sourceTree = "<group>";
@@ -184,6 +186,7 @@
 /* Begin XCBuildConfiguration section */
 		02CF40065297B7D1623DE1FE /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = E60164422FBA157D0032586B /* Secrets.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -249,6 +252,7 @@
 		};
 		329ED8EFF65F88A91B80CBA4 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = E60164422FBA157D0032586B /* Secrets.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
@@ -266,6 +270,7 @@
 		};
 		45409D87F8FA793C657AA8CC /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = E60164422FBA157D0032586B /* Secrets.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
@@ -283,6 +288,7 @@
 		};
 		E16B321A5E1BFB26FE3EA0D4 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = E60164422FBA157D0032586B /* Secrets.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

@@ -24,6 +24,8 @@ ios/DerivedData/
 ios/*.xcworkspace/
 # Shared scheme can hold API_KEY in its env vars — never commit it.
 ios/*.xcodeproj/xcshareddata/
+# Real API key baked into the app build — committed template is Secrets.example.xcconfig
+ios/CloudScout/Secrets.xcconfig
 .claude/
 
 # Private notes
