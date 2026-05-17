@@ -22,6 +22,8 @@ ios/*.xcodeproj/project.xcworkspace/
 ios/*.xcodeproj/xcuserdata/
 ios/DerivedData/
 ios/*.xcworkspace/
+# Shared scheme can hold API_KEY in its env vars — never commit it.
+ios/*.xcodeproj/xcshareddata/
 .claude/
 
 # Private notes
