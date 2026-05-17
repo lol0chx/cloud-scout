@@ -16,6 +16,7 @@ which the rest of the codebase obtains via `init_db()`.
 
 import os
 import threading
+import time
 from typing import Optional
 
 import pandas as pd
@@ -332,9 +333,43 @@ def _upsert_sql(
     return f"INSERT OR REPLACE INTO {table} ({col_list}) VALUES ({placeholders})"
 
 
+_QCACHE: dict = {}
+_QCACHE_LOCK = threading.Lock()
+_QCACHE_TTL = float(os.environ.get("CLOUDSCOUT_CACHE_TTL", "300"))  # seconds
+_QCACHE_MAX = 32  # bound memory: keep at most N distinct queries cached
+
+
+def clear_query_cache() -> None:
+    """Drop all cached query results (call after a scrape so fresh data
+    shows immediately instead of waiting out the TTL)."""
+    with _QCACHE_LOCK:
+        _QCACHE.clear()
+
+
 def _read_sql(db: Database, query: str, params: Optional[dict] = None) -> pd.DataFrame:
-    """Run a SELECT and return a pandas DataFrame. Uses named-bind params (:name)."""
-    return pd.read_sql_query(text(query), db.engine, params=params or {})
+    """Run a SELECT and return a pandas DataFrame, with a short TTL cache.
+
+    Read endpoints (esp. /team/prediction) were re-pulling the full
+    ~82k-row mlb_players table from Supabase cross-region on EVERY request
+    (~3-8s, memory-heavy). Concurrent calls (scrolling matchups) piled up
+    and 502'd. Sports data only changes when a scrape runs, so a brief
+    shared cache is safe and turns repeat loads into ~ms. Cached frames are
+    treated as read-only by callers (they filter/copy internally), so the
+    object is shared without copying. TTL via CLOUDSCOUT_CACHE_TTL.
+    """
+    params = params or {}
+    key = (query, tuple(sorted(params.items())))
+    now = time.monotonic()
+    hit = _QCACHE.get(key)
+    if hit is not None and (now - hit[0]) < _QCACHE_TTL:
+        return hit[1]
+    df = pd.read_sql_query(text(query), db.engine, params=params)
+    with _QCACHE_LOCK:
+        if len(_QCACHE) >= _QCACHE_MAX and key not in _QCACHE:
+            oldest = min(_QCACHE, key=lambda k: _QCACHE[k][0])
+            del _QCACHE[oldest]
+        _QCACHE[key] = (now, df)
+    return df
 
 
 # ── Games ─────────────────────────────────────────────────────────────────────

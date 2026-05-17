@@ -30,7 +30,7 @@ from analytics import (
     win_probability,
     win_streak,
 )
-from database import init_db, load_games, load_mlb_players, load_players, load_injuries, load_referee_stats, load_referee_assignments
+from database import init_db, load_games, load_mlb_players, load_players, load_injuries, load_referee_stats, load_referee_assignments, clear_query_cache
 from mlb_analytics import (
     mlb_batter_avg,
     mlb_batter_vs_team,
@@ -472,6 +472,7 @@ def scrape(req: ScrapeRequest):
             g, p = scrape_mlb_team(req.team, season=req.season, last=req.last)
         else:
             g, p = scrape_team(req.team, last=req.last)
+        clear_query_cache()   # fresh data should show immediately
         return {"games_added": len(g), "players_added": len(p)}
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -483,6 +484,7 @@ def scrape(req: ScrapeRequest):
 def refresh_injuries(league: str = "NBA"):
     """Fetch latest injury report from ESPN and save to database."""
     result = scrape_injuries(league.upper())
+    clear_query_cache()
     return {"injuries_updated": len(result)}
 
 
@@ -536,6 +538,7 @@ def get_game_starters(game_id: str):
 def refresh_referees():
     """Fetch latest referee stats and today's assignments."""
     stats_count, assign_count = scrape_referees()
+    clear_query_cache()
     return {"stats_updated": stats_count, "assignments_updated": assign_count}
 
 
