@@ -18,9 +18,13 @@ primary_region = 'sjc'
 [http_service]
   internal_port = 8080
   force_https = true
+  # Scale to zero: with min_machines_running = 0, Fly stops all machines
+  # when the app is idle (≈ $0 while no one is using it) and auto-starts
+  # one on the next incoming request. Trade-off: a ~1-3s cold start on
+  # the first request after idle.
   auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 1
+  min_machines_running = 0
 
   [http_service.concurrency]
     type = 'requests'
