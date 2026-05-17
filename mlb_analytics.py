@@ -331,6 +331,190 @@ def mlb_possible_injured_players(team, players_df, games_df):
     return sorted(prev_players - latest_players)
 
 
+def mlb_player_projected_stats(player_name, opponent, players_df, games_df,
+                               role="batter", injuries_df=None, n=15):
+    """Project an MLB player's per-game line vs a specific opponent.
+
+    Mirrors the NBA projection (analytics.player_projected_stats): blends a
+    decay-weighted baseline (games 6–n), recent 5-game form, and Bayesian-
+    shrunk decay-weighted head-to-head vs THIS opponent, then applies an
+    opponent factor (how that opponent's pitching/batting compares to the
+    league for each stat, capped ±25%). No minutes trend (not an MLB
+    concept). Returns projected counting stats + a derived rate stat
+    (AVG for batters, ERA/WHIP for pitchers), breakdown, H2H log, injury
+    flag, streak context, and confidence.
+    """
+    if role == "pitcher":
+        STATS = ["strikeouts_pitched", "earned_runs", "hits_allowed",
+                 "walks_allowed", "innings_pitched"]
+        primary = "strikeouts_pitched"
+    else:
+        role = "batter"
+        STATS = ["hits", "home_runs", "rbi", "runs", "walks", "strikeouts"]
+        primary = "hits"
+
+    role_df = players_df[players_df["role"] == role]
+    norm = _normalize(player_name)
+    pg = role_df[role_df["name"].apply(_normalize) == norm].copy()
+    if pg.empty:
+        return {"error": f"No {role} data found for '{player_name}'."}
+    matched = pg.iloc[0]["name"]
+    team = pg.iloc[0]["team"]
+    pg = pg.sort_values("date", ascending=False)
+
+    # Injury status
+    injury_status = injury_detail = None
+    if injuries_df is not None and not injuries_df.empty:
+        inj = injuries_df[injuries_df["player_name"].str.lower() == matched.lower()]
+        if not inj.empty:
+            injury_status = str(inj.iloc[0]["status"]).lower()
+            injury_detail = inj.iloc[0].get("injury_type") or inj.iloc[0].get("detail")
+
+    season_games = pg.head(n)
+    if season_games.empty:
+        return {"error": f"Insufficient data for '{player_name}'."}
+    recent_games = pg.head(5)
+    base_games = pg.iloc[5:n]
+    has_base = not base_games.empty
+
+    _D = 0.88
+
+    def _decay_avg(slc, stat):
+        vals = slc[stat].tolist()
+        w = [_D ** i for i in range(len(vals))]
+        ws = sum(w)
+        return round(sum(v * x for v, x in zip(vals, w)) / ws, 3) if ws > 0 else 0.0
+
+    recent_avg = {s: round(float(recent_games[s].mean()), 3) for s in STATS}
+    base_avg = ({s: _decay_avg(base_games, s) for s in STATS}
+                if has_base else recent_avg)
+    season_avg = {s: round(float(season_games[s].mean()), 3) for s in STATS}
+
+    if season_avg[primary] > 0:
+        r = recent_avg[primary] / season_avg[primary]
+        streak_context = "hot" if r >= 1.20 else ("cold" if r <= 0.80 else "normal")
+    else:
+        streak_context = "normal"
+
+    # Head-to-head vs opponent (decay-weighted, Bayesian-shrunk, capped 10)
+    h2h_n = 0
+    h2h_avg = None
+    h2h_raw_avg = None
+    h2h_log = []
+    if not games_df.empty:
+        merged = pg.merge(games_df[["id", "home_team", "away_team"]],
+                          left_on="game_id", right_on="id", how="left")
+        merged["_opp"] = merged.apply(
+            lambda x: x["away_team"] if x["team"] == x["home_team"] else x["home_team"],
+            axis=1)
+        h2h_rows = merged[merged["_opp"] == opponent] \
+            .sort_values("date", ascending=False).head(10)
+        h2h_n = len(h2h_rows)
+        if h2h_n > 0:
+            d = 0.85
+            w = [d ** i for i in range(h2h_n)]
+            ws = sum(w)
+            h2h_avg, h2h_raw_avg = {}, {}
+            for s in STATS:
+                vals = h2h_rows[s].tolist()
+                h2h_avg[s] = round(sum(v * x for v, x in zip(vals, w)) / ws, 3)
+                h2h_raw_avg[s] = round(float(h2h_rows[s].mean()), 3)
+            _M = 4  # prior strength: at k=4 H2H games it's 50/50 with season
+            h2h_avg = {s: round((h2h_n * h2h_avg[s] + _M * season_avg[s])
+                                / (h2h_n + _M), 3) for s in STATS}
+            ldf = h2h_rows[["date"] + STATS].copy()
+            h2h_log = ldf.where(pd.notnull(ldf), None).to_dict(orient="records")
+
+    # Opponent factor: opponent's allowed (batter) / produced (pitcher) per
+    # role-game vs the league baseline, current season only, capped ±25%.
+    opp_factors = {s: 1.0 for s in STATS}
+    if not games_df.empty:
+        latest = games_df["season"].max() if "season" in games_df.columns else None
+        sgames = games_df[games_df["season"] == latest] if latest is not None else games_df
+        opp_gids = sgames[(sgames["home_team"] == opponent)
+                          | (sgames["away_team"] == opponent)]["id"].values
+        # batter → look at opposing batters facing this opponent's pitching;
+        # pitcher → opposing pitchers facing this opponent's batters.
+        vs_opp = players_df[players_df["game_id"].isin(opp_gids)
+                            & (players_df["team"] != opponent)
+                            & (players_df["role"] == role)]
+        season_role = players_df[players_df["game_id"].isin(sgames["id"].values)
+                                 & (players_df["role"] == role)]
+        for s in STATS:
+            lg = season_role[s].mean() if not season_role.empty else role_df[s].mean()
+            allowed = vs_opp[s].mean() if not vs_opp.empty else lg
+            if lg and lg > 0:
+                opp_factors[s] = float(max(min(allowed / lg, 1.25), 0.75))
+
+    # Blend: H2H 8%/game (max 40%), remainder 70% base / 30% recent
+    h2h_w = min(0.40, h2h_n * 0.08) if h2h_n > 0 else 0.0
+    base_w = (1 - h2h_w) * 0.70
+    rec_w = (1 - h2h_w) * 0.30
+
+    projected, breakdown = {}, {}
+    for s in STATS:
+        ra, ba = recent_avg[s], base_avg[s]
+        if h2h_avg is not None and h2h_w > 0:
+            raw = h2h_avg[s] * h2h_w + ba * base_w + ra * rec_w
+        else:
+            raw = ba * 0.70 + ra * 0.30
+        projected[s] = round(float(max(raw * opp_factors[s], 0.0)), 2)
+        breakdown[s] = {
+            "season_avg": float(season_avg[s]),
+            "base_avg_decayed": float(ba),
+            "recent_avg_5g": float(ra),
+            "h2h_avg_raw": h2h_raw_avg[s] if h2h_raw_avg else None,
+            "h2h_avg_shrunk": h2h_avg[s] if h2h_avg else None,
+            "h2h_games": h2h_n,
+            "h2h_weight_pct": round(h2h_w * 100),
+            "opp_factor": round(opp_factors[s], 3),
+            "projected": projected[s],
+        }
+
+    # Derived rate stat
+    derived = {}
+    if role == "batter":
+        ab_r = float(recent_games["at_bats"].mean())
+        ab_s = float(season_games["at_bats"].mean())
+        proj_ab = max(ab_r * 0.30 + ab_s * 0.70, 0.1)
+        derived = {
+            "AVG": round(projected["hits"] / proj_ab, 3) if proj_ab > 0 else 0.0,
+            "proj_at_bats": round(proj_ab, 1),
+        }
+    else:
+        ip = projected["innings_pitched"]
+        derived = {
+            "ERA": round(projected["earned_runs"] / ip * 9, 2) if ip > 0 else 0.0,
+            "WHIP": round((projected["walks_allowed"] + projected["hits_allowed"]) / ip, 2)
+                    if ip > 0 else 0.0,
+        }
+
+    total_games = len(season_games)
+    if h2h_n >= 4 and total_games >= 10:
+        confidence = "high"
+    elif h2h_n >= 2 or total_games >= 8:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return {
+        "player": matched,
+        "team": team,
+        "opponent": opponent,
+        "role": role,
+        "projected": projected,
+        "derived": derived,
+        "breakdown": breakdown,
+        "h2h_games": h2h_n,
+        "h2h_log": h2h_log,
+        "season_games_used": total_games,
+        "streak_context": streak_context,
+        "injury_status": injury_status,
+        "injury_detail": injury_detail,
+        "confidence": confidence,
+    }
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MLB Prediction Model — 8-Pillar composite blended with Pythagorean expectation.
 #

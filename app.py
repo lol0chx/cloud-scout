@@ -38,7 +38,82 @@ from mlb_analytics import (
     mlb_top_pitchers,
     mlb_possible_injured_players,
     mlb_win_probability,
+    mlb_player_projected_stats,
 )
+
+def render_mlb_projection(player, opponent, players_df, games_df,
+                          injuries_df, n, role):
+    """MLB analogue of the NBA 'Projected Stats vs opponent' panel."""
+    proj = mlb_player_projected_stats(
+        player, opponent, players_df, games_df,
+        role=role, injuries_df=injuries_df, n=n,
+    )
+    st.markdown(f"### Projected Stats — {player} vs {opponent}")
+    if "error" in proj:
+        st.warning(proj["error"])
+        return
+
+    if proj["injury_status"] and proj["injury_status"] not in ("active", "probable"):
+        st.error(f"⚠️ {proj['injury_status'].upper()}  ·  {proj['injury_detail'] or ''}")
+    if proj["streak_context"] == "hot":
+        st.success("🔥 HOT — last 5 games 20%+ above season average")
+    elif proj["streak_context"] == "cold":
+        st.warning("❄️ COLD — last 5 games 20%+ below season average")
+
+    conf = {"high": "🟢", "medium": "🟡", "low": "🔴"}[proj["confidence"]]
+    st.caption(
+        f"{conf} Confidence: **{proj['confidence'].upper()}**  ·  "
+        f"H2H vs {opponent}: **{proj['h2h_games']}**  ·  "
+        f"Games used: **{proj['season_games_used']}**"
+    )
+
+    P, D = proj["projected"], proj["derived"]
+    if role == "batter":
+        tiles = [("AVG", D.get("AVG")), ("H", P["hits"]), ("HR", P["home_runs"]),
+                 ("RBI", P["rbi"]), ("R", P["runs"]), ("BB", P["walks"]),
+                 ("SO", P["strikeouts"])]
+        order = [("hits", "H"), ("home_runs", "HR"), ("rbi", "RBI"),
+                 ("runs", "R"), ("walks", "BB"), ("strikeouts", "SO")]
+    else:
+        tiles = [("ERA", D.get("ERA")), ("WHIP", D.get("WHIP")),
+                 ("SO", P["strikeouts_pitched"]), ("IP", P["innings_pitched"]),
+                 ("ER", P["earned_runs"]), ("H", P["hits_allowed"]),
+                 ("BB", P["walks_allowed"])]
+        order = [("strikeouts_pitched", "SO"), ("earned_runs", "ER"),
+                 ("hits_allowed", "H"), ("walks_allowed", "BB"),
+                 ("innings_pitched", "IP")]
+
+    for col, (lbl, val) in zip(st.columns(len(tiles)), tiles):
+        col.metric(lbl, val)
+
+    st.markdown("**Projection Breakdown**")
+    rows = []
+    for key, lbl in order:
+        bd = proj["breakdown"][key]
+        opp_pct = round((bd["opp_factor"] - 1) * 100)
+        opp_str = (f"+{opp_pct}%" if opp_pct > 0
+                   else (f"{opp_pct}%" if opp_pct < 0 else "avg"))
+        h2h_str = (f"{bd['h2h_avg_shrunk']} ({bd['h2h_games']}g, "
+                   f"{bd['h2h_weight_pct']}% wt)"
+                   if bd["h2h_avg_shrunk"] is not None else "—")
+        rows.append({
+            "Stat": lbl,
+            "Season Avg": bd["season_avg"],
+            f"H2H vs {opponent}": h2h_str,
+            "Recent 5G": bd["recent_avg_5g"],
+            "Opp Factor": opp_str,
+            "Projected": bd["projected"],
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    if proj["h2h_log"]:
+        with st.expander(f"H2H Game Log vs {opponent} ({proj['h2h_games']} games)"):
+            st.dataframe(pd.DataFrame(proj["h2h_log"]),
+                         use_container_width=True, hide_index=True)
+    else:
+        st.info(f"No H2H history vs {opponent} — projection uses "
+                "season & recent form only.")
+
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(page_title="CloudScout", page_icon="🏟", layout="wide")
@@ -1023,6 +1098,11 @@ elif active_tab == "Player Stats":
                     except Exception as e:
                         st.warning(str(e))
 
+                st.divider()
+                render_mlb_projection(batter_sel, opp_sel, players_df, games_df,
+                                      injuries_df, num_games, "batter")
+                st.divider()
+
                 st.markdown("**Game Log**")
                 log = batters_df[batters_df["name"] == batter_sel].sort_values("date", ascending=False).head(num_games)
                 log = log.merge(games_df[["id", "home_team", "away_team"]], left_on="game_id", right_on="id", how="left")
@@ -1050,6 +1130,12 @@ elif active_tab == "Player Stats":
                                  use_container_width=True, hide_index=True)
                 except ValueError as e:
                     st.warning(str(e))
+
+                st.divider()
+                opp_p = st.selectbox("Opponent", MLB_TEAMS, key="pvt_opp_pitch")
+                render_mlb_projection(pitcher_sel, opp_p, players_df, games_df,
+                                      injuries_df, num_games, "pitcher")
+                st.divider()
 
                 st.markdown("**Game Log**")
                 log = pitchers_df[pitchers_df["name"] == pitcher_sel].sort_values("date", ascending=False).head(num_games)

@@ -38,6 +38,7 @@ from mlb_analytics import (
     mlb_top_batters,
     mlb_top_pitchers,
     mlb_win_probability,
+    mlb_player_projected_stats,
 )
 from mlb_scraper import DEFAULT_SEASON as MLB_DEFAULT_SEASON
 from mlb_scraper import get_all_mlb_teams, scrape_mlb_team, fetch_todays_mlb_games
@@ -379,25 +380,38 @@ def get_player_vs_team(name: str, opponent: str, league: str = "NBA", n: int = 1
 
 
 @app.get("/player/projected")
-def get_player_projected(name: str, opponent: str, n: int = 15):
+def get_player_projected(name: str, opponent: str, league: str = "NBA",
+                         role: str = "batter", n: int = 15):
     """
-    Project expected pts/ast/reb/stl for an NBA player vs a specific opponent.
+    Project a player's per-game line vs a specific opponent.
 
-    Blends season averages, head-to-head history (heavily weighted), recent 5-game
-    form, opponent defensive tendencies, and minutes trend into a single projection.
-    Also returns H2H game log, injury flag, streak context, and confidence level.
+    NBA: pts/ast/reb/stl. MLB (`league=MLB`): batter (H/HR/RBI/R/BB/SO + AVG)
+    or pitcher (SO/ER/H/BB/IP + ERA/WHIP) via `role`. Both blend a decayed
+    baseline, recent 5-game form, Bayesian-shrunk head-to-head vs the
+    opponent, and an opponent factor. Returns breakdown, H2H log, injury
+    flag, streak context, and confidence.
     """
     conn = _conn()
     try:
-        games_df = load_games(conn, league="NBA")
-        players_df = load_players(conn)
-        injuries_df = load_injuries(conn, league="NBA")
-        if players_df.empty:
-            raise HTTPException(404, "No player data in database")
-        result = player_projected_stats(
-            name, opponent, players_df, games_df,
-            injuries_df=injuries_df, n=n
-        )
+        league_u = league.upper()
+        games_df = load_games(conn, league=league_u)
+        injuries_df = load_injuries(conn, league=league_u)
+        if league_u == "MLB":
+            players_df = load_mlb_players(conn)
+            if players_df.empty:
+                raise HTTPException(404, "No player data in database")
+            result = mlb_player_projected_stats(
+                name, opponent, players_df, games_df,
+                role=role, injuries_df=injuries_df, n=n
+            )
+        else:
+            players_df = load_players(conn)
+            if players_df.empty:
+                raise HTTPException(404, "No player data in database")
+            result = player_projected_stats(
+                name, opponent, players_df, games_df,
+                injuries_df=injuries_df, n=n
+            )
         if "error" in result:
             raise HTTPException(404, result["error"])
         return result
